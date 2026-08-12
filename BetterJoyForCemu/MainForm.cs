@@ -67,7 +67,10 @@ namespace BetterJoyForCemu {
             }
         }
 
+        private bool isExiting = false;
+
         private void HideToTray() {
+            if (isExiting) return;
             this.WindowState = FormWindowState.Minimized;
             notifyIcon.Visible = true;
             notifyIcon.BalloonTipText = "Double click the tray icon to maximise!";
@@ -77,6 +80,7 @@ namespace BetterJoyForCemu {
         }
 
         private void ShowFromTray() {
+            if (isExiting) return;
             this.Show();
             this.WindowState = FormWindowState.Normal;
             this.ShowInTaskbar = true;
@@ -86,12 +90,14 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_Resize(object sender, EventArgs e) {
+            if (isExiting) return;
             if (this.WindowState == FormWindowState.Minimized) {
                 HideToTray();
             }
         }
 
         private void notifyIcon_MouseDoubleClick(object sender, MouseEventArgs e) {
+            if (isExiting) return;
             ShowFromTray();
         }
 
@@ -111,18 +117,28 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e) {
-            try {
-                Program.Stop();
-                Environment.Exit(0);
-            } catch { }
+            ExitApplication();
         }
 
-        private void exitToolStripMenuItem_Click(object sender, EventArgs e) { // this does not work, for some reason. Fix before release
+        private void exitToolStripMenuItem_Click(object sender, EventArgs e) {
+            ExitApplication();
+        }
+
+        // Single exit path, guarded against being entered twice (Close() re-enters via
+        // MainForm_FormClosing, and Program.Stop()'s cleanup - disposing hooks, stopping the UDP
+        // server, disconnecting Joycons - isn't safe to run twice). Termination itself must not
+        // be skippable by a cleanup failure, so it happens in a finally rather than after Stop().
+        private void ExitApplication() {
+            if (isExiting) return;
+            isExiting = true;
+
+            notifyIcon.Visible = false; // remove the tray icon immediately so no further tray messages can reach it
+
             try {
                 Program.Stop();
-                Close();
+            } catch { } finally {
                 Environment.Exit(0);
-            } catch { }
+            }
         }
 
         private void linkLabel1_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e) {
