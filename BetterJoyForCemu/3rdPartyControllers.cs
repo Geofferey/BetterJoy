@@ -53,8 +53,7 @@ namespace BetterJoyForCemu {
         static readonly string path;
 
         static _3rdPartyControllers() {
-            path = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)
-                   + "\\3rdPartyControllers";
+            path = Path.Combine(AppPaths.DataDir, "3rdPartyControllers");
         }
 
         public _3rdPartyControllers() {

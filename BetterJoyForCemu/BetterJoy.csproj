@@ -71,8 +71,7 @@
     <Prefer32Bit>true</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup>
-    <StartupObject>
-    </StartupObject>
+    <StartupObject>BetterJoyForCemu.EntryPoint</StartupObject>
   </PropertyGroup>
   <PropertyGroup>
     <ApplicationIcon>Icons\betterjoyforcemu_icon.ico</ApplicationIcon>
@@ -131,9 +130,11 @@
       <DependentUpon>3rdPartyControllers.cs</DependentUpon>
     </Compile>
     <Compile Include="Collections\ConcurrentList.cs" />
+    <Compile Include="AppPaths.cs" />
     <Compile Include="Config.cs" />
     <Compile Include="Controller\OutputControllerDualShock4.cs" />
     <Compile Include="Controller\OutputControllerXbox360.cs" />
+    <Compile Include="EntryPoint.cs" />
     <Compile Include="HIDapi.cs" />
     <Compile Include="Joycon.cs" />
     <Compile Include="MadgwickAHRS.cs" />
