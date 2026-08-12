@@ -265,3 +265,6 @@ __pycache__/
 /title.pdn
 /Drivers
 /! Install the drivers in the Drivers folder
+
+# Locally downloaded build tools (nuget.exe, etc.)
+/.tools/

@@ -139,6 +139,15 @@ namespace BetterJoyForCemu {
                     }
                 }
 
+                // auto-detect and register new 3rd-party controllers instead of requiring manual setup
+                if (!validController && Boolean.Parse(ConfigurationManager.AppSettings["AutoAddControllers"]) && IsGameController(enumerate)) {
+                    thirdParty = new SController(BuildDeviceName(enumerate), enumerate.vendor_id, enumerate.product_id, GuessType(enumerate), enumerate.serial_number);
+                    Program.thirdPartyCons.Add(thirdParty);
+                    _3rdPartyControllers.PersistCustomController(thirdParty);
+                    validController = true;
+                    form.AppendTextBox("Auto-added new controller: " + thirdParty + "\r\n");
+                }
+
                 ushort prod_id = thirdParty == null ? enumerate.product_id : TypeToProdId(thirdParty.type);
                 if (prod_id == 0) {
                     ptr = enumerate.next; // controller was not assigned a type, but advance ptr anyway

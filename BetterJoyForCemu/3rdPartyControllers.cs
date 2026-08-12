@@ -93,6 +93,34 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // HID Usage Page 0x01 (Generic Desktop), Usage 0x04 (Joystick) / 0x05 (Gamepad) / 0x08 (Multi-axis Controller)
+        public static bool IsGameController(hid_device_info d) {
+            return d.usage_page == 0x01 && (d.usage == 0x04 || d.usage == 0x05 || d.usage == 0x08);
+        }
+
+        // Best-effort guess so the user doesn't have to know the type numbering by heart
+        public static byte GuessType(hid_device_info d) {
+            String haystack = ((d.manufacturer_string ?? "") + " " + (d.product_string ?? "")).ToLowerInvariant();
+            if (haystack.Contains("left") || haystack.Contains("(l)"))
+                return 2; // Left Joycon
+            if (haystack.Contains("right") || haystack.Contains("(r)"))
+                return 3; // Right Joycon
+            return 1; // default guess: Pro Controller
+        }
+
+        // Appends a controller that was auto-detected at runtime so it persists across restarts
+        public static void PersistCustomController(SController sc) {
+            File.AppendAllText(path, sc.Serialise() + "\r\n");
+        }
+
+        // Shared so every code path (manual dialog, auto-add) names a given device identically -
+        // otherwise the same physical device ends up with mismatched names in different lists/files
+        // and duplicate-detection (which compares by name) fails to recognise it as already added.
+        public static string BuildDeviceName(hid_device_info d) {
+            String manufacturer = String.IsNullOrEmpty(d.manufacturer_string) ? "" : d.manufacturer_string + " ";
+            return manufacturer + d.product_string + '(' + d.vendor_id + '-' + d.product_id + '-' + d.serial_number + ')';
+        }
+
         private bool ContainsText(ListBox a, String manu) {
             foreach (SController v in a.Items) {
                 if (v == null)
@@ -114,16 +142,14 @@ namespace BetterJoyForCemu {
             while (ptr != IntPtr.Zero) {
                 enumerate = (hid_device_info)Marshal.PtrToStructure(ptr, typeof(hid_device_info));
 
-                if (enumerate.serial_number == null) {
+                if (enumerate.serial_number == null || !IsGameController(enumerate)) {
                     ptr = enumerate.next;
                     continue;
                 }
 
-                // TODO: try checking against interface number instead
-                String name = enumerate.product_string + '(' + enumerate.vendor_id + '-' + enumerate.product_id + '-'+enumerate.serial_number+')';
+                String name = BuildDeviceName(enumerate);
                 if (!ContainsText(list_customControllers, name) && !ContainsText(list_allControllers, name)) {
-                    list_allControllers.Items.Add(new SController(name, enumerate.vendor_id, enumerate.product_id, 0, enumerate.serial_number));
-                    // 0 type is undefined
+                    list_allControllers.Items.Add(new SController(name, enumerate.vendor_id, enumerate.product_id, GuessType(enumerate), enumerate.serial_number));
                     Console.WriteLine("Found controller "+ name);
                 }
 
