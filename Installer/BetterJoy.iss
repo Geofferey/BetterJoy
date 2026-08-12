@@ -4,6 +4,7 @@
 #define MyAppURL "https://github.com/Geofferey/BetterJoy"
 #define MyAppExeName "BetterJoyForCemu.exe"
 #define MyBuildDir "..\BetterJoyForCemu\bin\x64\Release"
+#define MyViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 
 [Setup]
 ; Same GUID as the project's ProjectGuid, so upgrades are detected correctly across releases.
@@ -46,7 +47,7 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "msiexec.exe"; Parameters: "/i ""{app}\Drivers\ViGEmBusSetup_x64.msi"" /quiet /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Tasks: vigembus; Flags: waituntilterminated
+Filename: "{app}\Drivers\{#MyViGEmBusInstaller}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Tasks: vigembus; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]

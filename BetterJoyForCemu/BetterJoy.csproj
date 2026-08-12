@@ -181,10 +181,7 @@
     <None Include="Drivers\HIDGuardian\_drivers\HidGuardian\HidGuardian.sys">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <Content Include="Drivers\ViGEmBusSetup_x64.msi">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-    <Content Include="Drivers\ViGEmBusSetup_x86.msi">
+    <Content Include="Drivers\ViGEmBus_1.22.0_x64_x86_arm64.exe">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <None Include="packages.config" />

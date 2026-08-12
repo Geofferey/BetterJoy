@@ -23,7 +23,7 @@ Go to the [Releases tab](https://github.com/Davidobot/BetterJoy/releases/)!
 # How to use
 1. Install drivers
     1. Read the READMEs (they're there for a reason!)
-    1. Run *Drivers/ViGEmBus_Setup_1.16.116.exe*
+    1. Run *Drivers/ViGEmBus_1.22.0_x64_x86_arm64.exe*
     1. Restart your computer
 2. Run *BetterJoyForCemu.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work

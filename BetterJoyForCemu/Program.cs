@@ -371,6 +371,10 @@ namespace BetterJoyForCemu {
 
         static MainForm form;
 
+        // HidGuardian (and the HidCerberus.Srv REST API this talks to below) is archived/deprecated
+        // upstream, superseded by HidHide (github.com/nefarius/HidHide). HidHide has no REST API and
+        // a different hide-by-device-instance model, so swapping it in means reworking this
+        // integration, not just bundling a newer driver. Planned, not yet done.
         static public bool useHIDG = Boolean.Parse(ConfigurationManager.AppSettings["UseHIDG"]);
 
         public static List<SController> thirdPartyCons = new List<SController>();
