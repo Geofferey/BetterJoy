@@ -268,3 +268,6 @@ __pycache__/
 
 # Locally downloaded build tools (nuget.exe, etc.)
 /.tools/
+
+# Compiled installer output
+/Installer/Output/
