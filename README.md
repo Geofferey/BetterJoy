@@ -18,7 +18,7 @@ It's been quite a wild ride, with nearly **590k** (!!) official download on GitH
 ![Example](https://user-images.githubusercontent.com/16619943/67919451-bf8e5680-fb76-11e9-995e-7193b87548e1.png)
 
 # Downloads
-Go to the [Releases tab](https://github.com/Davidobot/BetterJoy/releases/)!
+Go to the [Releases tab](https://github.com/Geofferey/BetterJoy/releases/)!
 
 # How to use
 1. Install drivers
