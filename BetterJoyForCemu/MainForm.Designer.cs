@@ -325,13 +325,17 @@ namespace BetterJoyForCemu {
             // 
             // btn_settings
             // 
-            this.btn_settings.Location = new System.Drawing.Point(198, 243);
+            this.btn_settings.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.gear;
+            this.btn_settings.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Zoom;
+            this.btn_settings.FlatAppearance.BorderSize = 0;
+            this.btn_settings.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.btn_settings.Location = new System.Drawing.Point(262, 245);
             this.btn_settings.Margin = new System.Windows.Forms.Padding(3, 3, 12, 3);
             this.btn_settings.Name = "btn_settings";
-            this.btn_settings.Size = new System.Drawing.Size(84, 22);
+            this.btn_settings.Size = new System.Drawing.Size(19, 19);
             this.btn_settings.TabIndex = 14;
-            this.btn_settings.Text = "Settings >";
             this.btn_settings.UseVisualStyleBackColor = true;
+            this.btnTip.SetToolTip(this.btn_settings, "Settings");
             this.btn_settings.Click += new System.EventHandler(this.btn_settings_Click);
             // 
             // MainForm

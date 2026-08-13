@@ -295,7 +295,6 @@ namespace BetterJoyForCemu {
 
         private void btn_settings_Click(object sender, EventArgs e) {
             rightPanel.Visible = !rightPanel.Visible;
-            btn_settings.Text = rightPanel.Visible ? "< Settings" : "Settings >";
         }
 
         private void cbBox_Changed(object sender, EventArgs e) {
