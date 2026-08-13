@@ -1,4 +1,4 @@
-﻿namespace BetterJoyForCemu {
+namespace BetterJoyForCemu {
     partial class MainForm {
         /// <summary>
         /// Required designer variable.
@@ -330,7 +330,7 @@
             this.btn_settings.Name = "btn_settings";
             this.btn_settings.Size = new System.Drawing.Size(84, 22);
             this.btn_settings.TabIndex = 14;
-            this.btn_settings.Text = "Open Settings";
+            this.btn_settings.Text = "Settings >";
             this.btn_settings.UseVisualStyleBackColor = true;
             this.btn_settings.Click += new System.EventHandler(this.btn_settings_Click);
             // 
