@@ -107,6 +107,16 @@ namespace BetterJoyForCemu {
             Program.Start();
 
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
+            if (!console.Visible) {
+                // Close up the gap console leaves behind by pulling the settings gear/version
+                // label up into the Map Buttons/Add Controllers row instead of leaving them down
+                // where console used to end. The form is AutoSize/GrowAndShrink, so it naturally
+                // shrinks to fit afterward - and grows back to fit rightPanel when settings gets
+                // toggled open later, since that's sized independently of this.
+                btn_settings.Top = btn_reassign_open.Top;
+                version_lbl.Top = btn_reassign_open.Top;
+                version_lbl.Left = btn_settings.Left - version_lbl.Width - 6;
+            }
 
             if (Boolean.Parse(ConfigurationManager.AppSettings["StartInTray"])) {
                 HideToTray();

@@ -109,6 +109,7 @@ namespace BetterJoyForCemu {
             this.donationLink.TabIndex = 5;
             this.donationLink.TabStop = true;
             this.donationLink.Text = "Donate";
+            this.donationLink.Visible = false;
             this.donationLink.LinkClicked += new System.Windows.Forms.LinkLabelLinkClickedEventHandler(this.linkLabel1_LinkClicked);
             // 
             // conCntrls
