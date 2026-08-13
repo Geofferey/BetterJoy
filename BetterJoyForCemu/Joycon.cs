@@ -260,7 +260,7 @@ namespace BetterJoyForCemu {
         bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
         bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
 
-        public MainForm form;
+        public IJoyconHost form;
 
         public byte LED { get; private set; } = 0x0;
         public void SetLEDByPlayerNum(int id) {
@@ -328,7 +328,7 @@ namespace BetterJoyForCemu {
         }
 
         public void getActiveData() {
-            this.activeData = form.activeCaliData(serial_number);
+            this.activeData = CalibrationState.ActiveCaliData(serial_number);
         }
 
         public void ReceiveRumble(Xbox360FeedbackReceivedEventArgs e) {
@@ -523,16 +523,10 @@ namespace BetterJoyForCemu {
         }
 
         private void BatteryChanged() { // battery changed level
-            foreach (var v in form.con) {
-                if (v.Tag == this) {
-                    v.BackColor = GetBatteryColor(battery);
-                }
-            }
+            form.UpdateBatteryColor(this);
 
             if (battery <= 1 && !isUSB) {
-                form.notifyIcon.Visible = true;
-                form.notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", PadId, isPro ? "Pro Controller" : (isSnes ? "SNES Controller" : (is64? "N64 Controller" : (isLeft ? "Joycon Left" : "Joycon Right"))));
-                form.notifyIcon.ShowBalloonTip(0);
+                form.NotifyLowBattery(this);
             }
         }
 
@@ -654,13 +648,16 @@ namespace BetterJoyForCemu {
         private readonly Stopwatch shakeTimer = Stopwatch.StartNew(); //Setup a timer for measuring shake in milliseconds
         private long shakedTime = 0;
         private bool hasShaked;
+        bool shakeInputEnabled = Boolean.Parse(ConfigurationManager.AppSettings["EnableShakeInput"]);
+        float shakeSensitivity = float.Parse(ConfigurationManager.AppSettings["ShakeInputSensitivity"]);
+        float shakeDelay = float.Parse(ConfigurationManager.AppSettings["ShakeInputDelay"]);
         void DetectShake() {
-            if (form.shakeInputEnabled) {
+            if (shakeInputEnabled) {
                 long currentShakeTime = shakeTimer.ElapsedMilliseconds;
 
                 // Shake detection logic
-                bool isShaking = GetAccel().LengthSquared() >= form.shakeSesitivity;
-                if (isShaking && currentShakeTime >= shakedTime + form.shakeDelay || isShaking && shakedTime == 0) {
+                bool isShaking = GetAccel().LengthSquared() >= shakeSensitivity;
+                if (isShaking && currentShakeTime >= shakedTime + shakeDelay || isShaking && shakedTime == 0) {
                     shakedTime = currentShakeTime;
                     hasShaked = true;
 
@@ -765,7 +762,7 @@ namespace BetterJoyForCemu {
 
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && !isPro) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
-                    form.JoinOrSplitJoycon(form.con[PadId]); // trigger connection button click
+                    form.JoinOrSplitJoycon(this); // trigger connection button click
 
                     lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
                     return;
@@ -1079,31 +1076,31 @@ namespace BetterJoyForCemu {
                 acc_r[1] = (Int16)(report_buf[15 + n * 12] | ((report_buf[16 + n * 12] << 8) & 0xff00));
                 acc_r[2] = (Int16)(report_buf[17 + n * 12] | ((report_buf[18 + n * 12] << 8) & 0xff00));
 
-                if (form.allowCalibration) {
+                if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
                     for (int i = 0; i < 3; ++i) {
                         switch (i) {
                             case 0:
                                 acc_g.X = (acc_r[i] - activeData[3]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.X = (gyr_r[i] - activeData[0]) * (816.0f / gyr_sen[i]);
-                                if (form.calibrate) {
-                                    form.xA.Add(acc_r[i]);
-                                    form.xG.Add(gyr_r[i]);
+                                if (CalibrationState.Calibrating) {
+                                    CalibrationState.XA.Add(acc_r[i]);
+                                    CalibrationState.XG.Add(gyr_r[i]);
                                 }
                                 break;
                             case 1:
                                 acc_g.Y = (!isLeft ? -1 : 1) * (acc_r[i] - activeData[4]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.Y = -(!isLeft ? -1 : 1) * (gyr_r[i] - activeData[1]) * (816.0f / gyr_sen[i]);
-                                if (form.calibrate) {
-                                    form.yA.Add(acc_r[i]);
-                                    form.yG.Add(gyr_r[i]);
+                                if (CalibrationState.Calibrating) {
+                                    CalibrationState.YA.Add(acc_r[i]);
+                                    CalibrationState.YG.Add(gyr_r[i]);
                                 }
                                 break;
                             case 2:
                                 acc_g.Z = (!isLeft ? -1 : 1) * (acc_r[i] - activeData[5]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.Z = -(!isLeft ? -1 : 1) * (gyr_r[i] - activeData[2]) * (816.0f / gyr_sen[i]);
-                                if (form.calibrate) {
-                                    form.zA.Add(acc_r[i]);
-                                    form.zG.Add(gyr_r[i]);
+                                if (CalibrationState.Calibrating) {
+                                    CalibrationState.ZA.Add(acc_r[i]);
+                                    CalibrationState.ZG.Add(gyr_r[i]);
                                 }
                                 break;
                         }

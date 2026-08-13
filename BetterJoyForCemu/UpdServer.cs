@@ -15,7 +15,7 @@ namespace BetterJoyForCemu {
 
         IList<Joycon> controllers;
 
-        public MainForm form;
+        public IJoyconHost form;
 
         public UdpServer(IList<Joycon> p) {
             controllers = p;
@@ -279,7 +279,7 @@ namespace BetterJoyForCemu {
 
         public void Start(IPAddress ip, int port = 26760) {
             if (!Boolean.Parse(ConfigurationManager.AppSettings["MotionServer"])) {
-                form.console.AppendText("Motion server is OFF.\r\n");
+                form.AppendTextBox("Motion server is OFF.\r\n");
                 return;
             }
 
@@ -296,7 +296,7 @@ namespace BetterJoyForCemu {
                 udpSock.Close();
                 udpSock = null;
 
-                form.console.AppendText("Could not start server. Make sure that only one instance of the program is running at a time and no other CemuHook applications are running.\r\n");
+                form.AppendTextBox("Could not start server. Make sure that only one instance of the program is running at a time and no other CemuHook applications are running.\r\n");
                 return;
             }
 
@@ -305,7 +305,7 @@ namespace BetterJoyForCemu {
             serverId = BitConverter.ToUInt32(randomBuf, 0);
 
             running = true;
-            form.console.AppendText(String.Format("Starting server on {0}:{1}\r\n", ip.ToString(), port));
+            form.AppendTextBox(String.Format("Starting server on {0}:{1}\r\n", ip.ToString(), port));
             StartReceive();
         }
 

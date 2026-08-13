@@ -15,19 +15,13 @@ using System.Windows.Forms;
 using System.Xml.Linq;
 
 namespace BetterJoyForCemu {
-    public partial class MainForm : Form {
+    public partial class MainForm : Form, IJoyconHost {
         public bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
         public List<Button> con, loc;
-        public bool calibrate;
         private bool calibrationInProgress = false;
-        public List<KeyValuePair<string, float[]>> caliData;
         private Timer countDown;
         private int count;
         private Timer clickTimer;
-        public List<int> xG, yG, zG, xA, yA, zA;
-        public bool shakeInputEnabled = Boolean.Parse(ConfigurationManager.AppSettings["EnableShakeInput"]);
-        public float shakeSesitivity = float.Parse(ConfigurationManager.AppSettings["ShakeInputSensitivity"]);
-        public float shakeDelay = float.Parse(ConfigurationManager.AppSettings["ShakeInputDelay"]);
 
         public enum NonOriginalController : int {
             Disabled = 0,
@@ -36,12 +30,6 @@ namespace BetterJoyForCemu {
         }
 
         public MainForm() {
-            xG = new List<int>(); yG = new List<int>(); zG = new List<int>();
-            xA = new List<int>(); yA = new List<int>(); zA = new List<int>();
-            caliData = new List<KeyValuePair<string, float[]>> {
-                new KeyValuePair<string, float[]>("0", new float[6] {0,0,0,-710,0,0})
-            };
-
             clickTimer = new Timer { Interval = 250 };
             clickTimer.Tick += ClickTimer_Tick;
 
@@ -124,7 +112,7 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_Load(object sender, EventArgs e) {
-            Config.Init(caliData);
+            Config.Init(CalibrationState.CaliData);
 
             Program.Start();
 
@@ -220,7 +208,7 @@ namespace BetterJoyForCemu {
                 return;
 
             if (e.Button == MouseButtons.Right) {
-                JoinOrSplitJoycon(button);
+                JoinOrSplitJoycon((Joycon)button.Tag);
             } else if (e.Button == MouseButtons.Left) {
                 if (allowCalibration) {
                     HandlePossibleDoubleClick(button);
@@ -376,19 +364,37 @@ namespace BetterJoyForCemu {
         // the right half's slot is freed back to fully empty (available for a new controller),
         // since the pair now acts as a single virtual controller and doesn't need two slots to
         // show that.
-        public void CollapseJoinedPairIntoOneSlot(Joycon left, Joycon right) {
-            Button primaryButton = con.Find(b => b.Tag == left);
-            Button secondaryButton = con.Find(b => b.Tag == right);
-            if (primaryButton == null || secondaryButton == null)
-                return;
+        public void CollapseJoinedPair(Joycon left, Joycon right) {
+            this.Invoke(new MethodInvoker(delegate {
+                Button primaryButton = con.Find(b => b.Tag == left);
+                Button secondaryButton = con.Find(b => b.Tag == right);
+                if (primaryButton == null || secondaryButton == null)
+                    return;
 
-            primaryButton.BackgroundImage = ComposeJoinedIcon(primaryButton.Width, primaryButton.Height);
-            SetConnectionTooltip(primaryButton, false);
+                primaryButton.BackgroundImage = ComposeJoinedIcon(primaryButton.Width, primaryButton.Height);
+                SetConnectionTooltip(primaryButton, false);
 
-            secondaryButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
-            secondaryButton.Tag = null;
-            secondaryButton.BackgroundImage = Properties.Resources.cross;
-            SetEmptySlotTooltip(secondaryButton);
+                secondaryButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
+                secondaryButton.Tag = null;
+                secondaryButton.BackgroundImage = Properties.Resources.cross;
+                SetEmptySlotTooltip(secondaryButton);
+            }));
+        }
+
+        // IJoyconHost entry point for a brand new connection (Program.cs's
+        // CheckForNewControllers) - unlike AssignJoyconToSlot below (used by callers already
+        // running on the UI thread, like split/dropped-partner promotion), this is called from
+        // the background scan thread, so it marshals onto the UI thread itself.
+        public void AssignSlot(Joycon joycon) {
+            Bitmap icon;
+            if (joycon.isPro) icon = Properties.Resources.pro;
+            else if (joycon.isSnes) icon = Properties.Resources.snes;
+            else if (joycon.is64) icon = Properties.Resources.ultra;
+            else icon = joycon.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+
+            this.Invoke(new MethodInvoker(delegate {
+                AssignJoyconToSlot(joycon, icon);
+            }));
         }
 
         // Finds an empty slot for a Joycon that doesn't currently have its own button - used
@@ -419,91 +425,112 @@ namespace BetterJoyForCemu {
         // Called after Program.cs's CleanUp() detaches a dropped Joycon, to fix up whatever
         // slot(s) it and/or its (former) pair partner were occupying.
         public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) {
-            Button droppedButton = con.Find(b => b.Tag == dropped);
+            this.Invoke(new MethodInvoker(delegate {
+                Button droppedButton = con.Find(b => b.Tag == dropped);
 
-            if (droppedButton != null) {
-                // dropped was showing on its own slot - solo, Pro, or the primary half of a
-                // collapsed pair. Free that slot...
-                droppedButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
-                droppedButton.Tag = null;
-                droppedButton.BackgroundImage = Properties.Resources.cross;
-                SetEmptySlotTooltip(droppedButton);
+                if (droppedButton != null) {
+                    // dropped was showing on its own slot - solo, Pro, or the primary half of a
+                    // collapsed pair. Free that slot...
+                    droppedButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
+                    droppedButton.Tag = null;
+                    droppedButton.BackgroundImage = Properties.Resources.cross;
+                    SetEmptySlotTooltip(droppedButton);
 
-                // ...and if it was the primary half of a pair, the hidden secondary half
-                // needs a slot of its own now, since it was never given one.
-                if (survivingPartner != null) {
-                    Bitmap soloIcon = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                    if (!AssignJoyconToSlot(survivingPartner, soloIcon))
-                        AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
+                    // ...and if it was the primary half of a pair, the hidden secondary half
+                    // needs a slot of its own now, since it was never given one.
+                    if (survivingPartner != null) {
+                        Bitmap soloIcon = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                        if (!AssignJoyconToSlot(survivingPartner, soloIcon))
+                            AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
+                    }
+                } else if (survivingPartner != null) {
+                    // dropped was the hidden secondary half of a collapsed pair - its partner
+                    // (the still-connected primary) just needs to revert from the composite icon
+                    // back to its own solo icon.
+                    Button survivorButton = con.Find(b => b.Tag == survivingPartner);
+                    if (survivorButton != null) {
+                        survivorButton.BackgroundImage = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                        SetConnectionTooltip(survivorButton, false);
+                    }
                 }
-            } else if (survivingPartner != null) {
-                // dropped was the hidden secondary half of a collapsed pair - its partner
-                // (the still-connected primary) just needs to revert from the composite icon
-                // back to its own solo icon.
-                Button survivorButton = con.Find(b => b.Tag == survivingPartner);
-                if (survivorButton != null) {
-                    survivorButton.BackgroundImage = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                    SetConnectionTooltip(survivorButton, false);
+            }));
+        }
+
+        // Matches the low-battery balloon tip previously inlined in Joycon.BatteryChanged() -
+        // the caller (Joycon.cs) decides whether a notification is warranted (battery level,
+        // not USB-powered); this just shows it. Not Invoke-wrapped, matching that prior
+        // behavior - NotifyIcon operations aren't Control-handle-affine the way Buttons are.
+        public void NotifyLowBattery(Joycon joycon) {
+            string label = joycon.isPro ? "Pro Controller" : (joycon.isSnes ? "SNES Controller" : (joycon.is64 ? "N64 Controller" : (joycon.isLeft ? "Joycon Left" : "Joycon Right")));
+            notifyIcon.Visible = true;
+            notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", joycon.PadId, label);
+            notifyIcon.ShowBalloonTip(0);
+        }
+
+        // Not Invoke-wrapped, matching the prior inline behavior in Joycon.BatteryChanged().
+        public void UpdateBatteryColor(Joycon joycon) {
+            foreach (Button v in con) {
+                if (v.Tag == joycon) {
+                    v.BackColor = Joycon.GetBatteryColor(joycon.battery);
                 }
             }
         }
 
-        public void JoinOrSplitJoycon(Button button) {
-            if (button.Tag.GetType() == typeof(Joycon)) {
-                Joycon v = (Joycon)button.Tag;
+        public void JoinOrSplitJoycon(Joycon v) {
+            if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
+                bool succ = false;
 
-                if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
-                    bool succ = false;
+                if (Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
+                    v.other = v; // hacky; implement check in Joycon.cs to account for this
+                    succ = true;
+                } else {
+                    foreach (Joycon jc in Program.mgr.j) {
+                        if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
+                            v.other = jc;
+                            jc.other = v;
 
-                    if (Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
-                        v.other = v; // hacky; implement check in Joycon.cs to account for this
-                        succ = true;
-                    } else {
-                        foreach (Joycon jc in Program.mgr.j) {
-                            if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
-                                v.other = jc;
-                                jc.other = v;
-
-                                if (v.out_xbox != null) {
-                                    v.out_xbox.Disconnect();
-                                    v.out_xbox = null;
-                                }
-
-                                if (v.out_ds4 != null) {
-                                    v.out_ds4.Disconnect();
-                                    v.out_ds4 = null;
-                                }
-
-                                CollapseJoinedPairIntoOneSlot(v.isLeft ? v : jc, v.isLeft ? jc : v);
-
-                                succ = true;
-                                break;
+                            if (v.out_xbox != null) {
+                                v.out_xbox.Disconnect();
+                                v.out_xbox = null;
                             }
+
+                            if (v.out_ds4 != null) {
+                                v.out_ds4.Disconnect();
+                                v.out_ds4 = null;
+                            }
+
+                            CollapseJoinedPair(v.isLeft ? v : jc, v.isLeft ? jc : v);
+
+                            succ = true;
+                            break;
                         }
                     }
+                }
 
-                    if (succ && v.other == v) // self-pair (single joycon vertical mode) only -
-                        foreach (Button b in con) // a real pair is already handled above
-                            if (b.Tag == v)
-                                b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
-                } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
-                    ReenableViGEm(v);
-                    ReenableViGEm(v.other);
+                if (succ && v.other == v) // self-pair (single joycon vertical mode) only -
+                    foreach (Button b in con) // a real pair is already handled above
+                        if (b.Tag == v)
+                            b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
+            } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
+                ReenableViGEm(v);
+                ReenableViGEm(v.other);
 
-                    Joycon partner = v.other;
-                    bool wasRealPair = partner != v;
+                Joycon partner = v.other;
+                bool wasRealPair = partner != v;
 
+                Button button = con.Find(b => b.Tag == v);
+                if (button != null) {
                     button.BackgroundImage = v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
                     SetConnectionTooltip(button, false);
+                }
 
-                    v.other.other = null;
-                    v.other = null;
+                v.other.other = null;
+                v.other = null;
 
-                    if (wasRealPair) {
-                        Bitmap soloIcon = partner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                        if (!AssignJoyconToSlot(partner, soloIcon))
-                            AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
-                    }
+                if (wasRealPair) {
+                    Bitmap soloIcon = partner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    if (!AssignJoyconToSlot(partner, soloIcon))
+                        AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
                 }
             }
         }
@@ -615,11 +642,10 @@ namespace BetterJoyForCemu {
         }
 
         private void StartGetData() {
-            this.xG.Clear(); this.yG.Clear(); this.zG.Clear();
-            this.xA.Clear(); this.yA.Clear(); this.zA.Clear();
+            CalibrationState.ClearSamples();
             countDown = new Timer();
             this.count = 3;
-            this.calibrate = true;
+            CalibrationState.Calibrating = true;
             countDown.Tick += new EventHandler(CalcData);
             countDown.Interval = 1000;
             countDown.Enabled = true;
@@ -644,27 +670,9 @@ namespace BetterJoyForCemu {
         private void CalcData(object sender, EventArgs e) {
             if (this.count == 0) {
                 countDown.Stop();
-                this.calibrate = false;
-                string serNum = Program.mgr.j.First().serial_number;
-                int serIndex = this.findSer(serNum);
-                float[] Arr = new float[6] { 0, 0, 0, 0, 0, 0 };
-                if (serIndex == -1) {
-                    this.caliData.Add(new KeyValuePair<string, float[]>(
-                         serNum,
-                         Arr
-                    ));
-                } else {
-                    Arr = this.caliData[serIndex].Value;
-                }
-                Random rnd = new Random();
-                Arr[0] = (float)quickselect_median(this.xG, rnd.Next);
-                Arr[1] = (float)quickselect_median(this.yG, rnd.Next);
-                Arr[2] = (float)quickselect_median(this.zG, rnd.Next);
-                Arr[3] = (float)quickselect_median(this.xA, rnd.Next);
-                Arr[4] = (float)quickselect_median(this.yA, rnd.Next);
-                Arr[5] = (float)quickselect_median(this.zA, rnd.Next) - 4010; //Joycon.cs acc_sen 16384
+                CalibrationState.Calibrating = false;
+                CalibrationState.FinishCalibration(Program.mgr.j.First().serial_number);
                 this.console.Text += "Calibration completed!!!" + "\r\n";
-                Config.SaveCaliData(this.caliData);
                 Program.mgr.j.First().getActiveData();
                 calibrationInProgress = false;
                 RestoreCalibrateIcon();
@@ -672,49 +680,6 @@ namespace BetterJoyForCemu {
                 this.count--;
             }
 
-        }
-        private double quickselect_median(List<int> l, Func<int, int> pivot_fn) {
-            int ll = l.Count;
-            if (ll % 2 == 1) {
-                return this.quickselect(l, ll / 2, pivot_fn);
-            } else {
-                return 0.5 * (quickselect(l, ll / 2 - 1, pivot_fn) + quickselect(l, ll / 2, pivot_fn));
-            }
-        }
-
-        private int quickselect(List<int> l, int k, Func<int, int> pivot_fn) {
-            if (l.Count == 1 && k == 0) {
-                return l[0];
-            }
-            int pivot = l[pivot_fn(l.Count)];
-            List<int> lows = l.Where(x => x < pivot).ToList();
-            List<int> highs = l.Where(x => x > pivot).ToList();
-            List<int> pivots = l.Where(x => x == pivot).ToList();
-            if (k < lows.Count) {
-                return quickselect(lows, k, pivot_fn);
-            } else if (k < (lows.Count + pivots.Count)) {
-                return pivots[0];
-            } else {
-                return quickselect(highs, k - lows.Count - pivots.Count, pivot_fn);
-            }
-        }
-
-        public float[] activeCaliData(string serNum) {
-            for (int i = 0; i < this.caliData.Count; i++) {
-                if (this.caliData[i].Key == serNum) {
-                    return this.caliData[i].Value;
-                }
-            }
-            return this.caliData[0].Value;
-        }
-
-        private int findSer(string serNum) {
-            for (int i = 0; i < this.caliData.Count; i++) {
-                if (this.caliData[i].Key == serNum) {
-                    return i;
-                }
-            }
-            return -1;
         }
     }
 }

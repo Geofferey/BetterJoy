@@ -78,9 +78,10 @@ namespace BetterJoyForCemu {
             RefreshControllerList();
         }
 
-        private static void LoadControllerList(string filePath, ListBox target) {
+        private static List<SController> ParseControllerFile(string filePath) {
+            var result = new List<SController>();
             if (!File.Exists(filePath))
-                return;
+                return result;
 
             using (StreamReader file = new StreamReader(filePath)) {
                 string line = String.Empty;
@@ -91,9 +92,29 @@ namespace BetterJoyForCemu {
                     if (split.Length > 4) {
                         serial_number = split[4];
                     }
-                    target.Items.Add(new SController(split[0], ushort.Parse(split[1]), ushort.Parse(split[2]), byte.Parse(split[3]), serial_number));
+                    result.Add(new SController(split[0], ushort.Parse(split[1]), ushort.Parse(split[2]), byte.Parse(split[3]), serial_number));
                 }
             }
+            return result;
+        }
+
+        private static void LoadControllerList(string filePath, ListBox target) {
+            foreach (SController sc in ParseControllerFile(filePath))
+                target.Items.Add(sc);
+        }
+
+        // Populates Program.thirdPartyCons/blacklistedCons directly from disk, without
+        // constructing this Form (and its ListBoxes/child controls) at all - used by headless/
+        // service mode (see BetterJoyService), where there's no desktop for a Form to exist on.
+        // GUI mode still goes through the Form itself (CopyCustomControllers/
+        // CopyBlacklistedControllers), since that's also where the Add Controllers dialog's
+        // lists get populated for editing.
+        public static void LoadIntoProgramLists() {
+            Program.thirdPartyCons.Clear();
+            Program.thirdPartyCons.AddRange(ParseControllerFile(path));
+
+            Program.blacklistedCons.Clear();
+            Program.blacklistedCons.AddRange(ParseControllerFile(blacklistPath));
         }
 
         public void CopyCustomControllers() {

@@ -1,7 +1,9 @@
 using System;
 using System.Configuration;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.ServiceProcess;
 using Nefarius.Drivers.HidHide;
 
 namespace BetterJoyForCemu {
@@ -12,8 +14,25 @@ namespace BetterJoyForCemu {
     internal static class EntryPoint {
         [STAThread]
         static void Main(string[] args) {
+            // Both of these used to happen inside Program.Main() itself, which only the GUI path
+            // ever calls - a Windows Service goes straight into ServiceBase.Run below, bypassing
+            // Program.Main entirely, so it never got hidapi.dll's directory added to the DLL
+            // search path (crashing immediately on the first P/Invoke into it) or the culture
+            // set for correct float parsing. Doing both here covers every mode.
+            CultureInfo.CurrentCulture = new CultureInfo("en-US", false);
+            Program.SetupDlls();
+
             RedirectConfigToAppData();
-            Program.Main(args);
+
+            // "-service" is how the SCM launches BetterJoyForCemu.exe as a Windows Service (see
+            // Installer/BetterJoy.iss's sc.exe create binPath) - runs the same core pipeline
+            // headlessly instead of the normal WinForms GUI. Not something a user passes by hand.
+            bool runAsService = Array.Exists(args, arg => arg.Equals("-service", StringComparison.OrdinalIgnoreCase));
+            if (runAsService) {
+                ServiceBase.Run(new BetterJoyService());
+            } else {
+                Program.Main(args);
+            }
         }
 
         private static void RedirectConfigToAppData() {

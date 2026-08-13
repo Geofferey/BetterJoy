@@ -36,7 +36,7 @@ namespace BetterJoyForCemu {
         public ConcurrentList<Joycon> j { get; private set; } // Array of all connected Joy-Cons
         static JoyconManager instance;
 
-        public MainForm form;
+        public IJoyconHost form;
 
         System.Timers.Timer controllerCheck;
 
@@ -72,9 +72,7 @@ namespace BetterJoyForCemu {
                     // the dropped Joycon's own slot, and/or the surviving partner's.
                     Joycon partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
 
-                    form.Invoke(new MethodInvoker(delegate {
-                        form.HandleJoyconDropped(joycon, partner);
-                    }));
+                    form.HandleJoyconDropped(joycon, partner);
 
                     if (joycon.other != null)
                         joycon.other.other = null; // The other of the other is the joycon itself
@@ -293,43 +291,7 @@ namespace BetterJoyForCemu {
 
                     foundNew = true;
                     j.Last().form = form;
-
-                    if (j.Count < 5) {
-                        int ii = -1;
-                        foreach (Button v in form.con) {
-                            ii++;
-                            if (v.Tag == null) {
-                                System.Drawing.Bitmap temp;
-                                switch (prod_id) {
-                                    case (product_l):
-                                        temp = Properties.Resources.jc_left_s; break;
-                                    case (product_r):
-                                        temp = Properties.Resources.jc_right_s; break;
-                                    case (product_pro):
-                                        temp = Properties.Resources.pro; break;
-                                    case (product_snes):
-                                        temp = Properties.Resources.snes; break;
-                                    case (product_n64):
-                                        temp = Properties.Resources.ultra; break;
-                                    default:
-                                        temp = Properties.Resources.cross; break;
-                                }
-
-                                v.Invoke(new MethodInvoker(delegate {
-                                    v.Tag = j.Last(); // assign controller to button
-                                    v.BackgroundImage = temp;
-                                    form.SetConnectionTooltip(v, j.Last().isPro);
-                                }));
-
-                                form.loc[ii].Invoke(new MethodInvoker(delegate {
-                                    form.loc[ii].Tag = v;
-                                    form.loc[ii].Click += new EventHandler(form.locBtnClickAsync);
-                                }));
-
-                                break;
-                            }
-                        }
-                    }
+                    form.AssignSlot(j.Last());
 
                     byte[] mac = new byte[6];
                     try {
@@ -381,9 +343,7 @@ namespace BetterJoyForCemu {
 
                         Joycon left = temp.isLeft ? temp : v;
                         Joycon right = temp.isLeft ? v : temp;
-                        form.Invoke(new MethodInvoker(delegate {
-                            form.CollapseJoinedPairIntoOneSlot(left, right);
-                        }));
+                        form.CollapseJoinedPair(left, right);
 
                         temp = null;    // repeat
                     }
@@ -410,7 +370,7 @@ namespace BetterJoyForCemu {
                     jc.SetHomeLight(on);
 
                     jc.Begin();
-                    if (form.allowCalibration) {
+                    if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
                         jc.getActiveData();
                     }
                 }
@@ -448,7 +408,13 @@ namespace BetterJoyForCemu {
 
         public static JoyconManager mgr;
 
-        static MainForm form;
+        static IJoyconHost form;
+
+        // Lets a non-GUI host (BetterJoyService, running headless with no MainForm at all) wire
+        // itself in before calling Start(). GUI mode sets this itself via Main() below.
+        public static void SetHost(IJoyconHost host) {
+            form = host;
+        }
 
         static public bool useHidHide = Boolean.Parse(ConfigurationManager.AppSettings["UseHidHide"]);
         public static IHidHideControlService hidHide;
@@ -468,7 +434,7 @@ namespace BetterJoyForCemu {
                     // https://github.com/nefarius/HidHide/discussions/130
                     hidHide = new HidHideControlService();
                     if (!hidHide.IsInstalled) {
-                        form.console.AppendText("HidHide isn't installed - controllers won't be hidden from other programs.\r\n");
+                        form.AppendTextBox("HidHide isn't installed - controllers won't be hidden from other programs.\r\n");
                         useHidHide = false;
                     } else {
                         string exePath = Process.GetCurrentProcess().MainModule.FileName;
@@ -477,7 +443,7 @@ namespace BetterJoyForCemu {
                         hidHide.IsActive = true;
                     }
                 } catch (Exception e) {
-                    form.console.AppendText("Unable to configure HidHide - everything should work fine without it. (" + e.GetType().Name + ": " + e.Message + ")\r\n");
+                    form.AppendTextBox("Unable to configure HidHide - everything should work fine without it. (" + e.GetType().Name + ": " + e.Message + ")\r\n");
                     useHidHide = false;
                 }
             }
@@ -486,7 +452,7 @@ namespace BetterJoyForCemu {
                 try {
                     emClient = new ViGEmClient(); // Manages emulated XInput
                 } catch (Nefarius.ViGEm.Client.Exceptions.VigemBusNotFoundException) {
-                    form.console.AppendText("Could not start VigemBus. Make sure drivers are installed correctly.\r\n");
+                    form.AppendTextBox("Could not start VigemBus. Make sure drivers are installed correctly.\r\n");
                 }
             }
 
@@ -499,10 +465,18 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            // a bit hacky
-            _3rdPartyControllers partyForm = new _3rdPartyControllers();
-            partyForm.CopyCustomControllers();
-            partyForm.CopyBlacklistedControllers();
+            // GUI mode goes through the actual Form (also where the Add Controllers dialog's
+            // lists get populated for editing); headless/service mode has no desktop for a Form
+            // to exist on, so it loads the persisted lists directly instead - see
+            // _3rdPartyControllers.LoadIntoProgramLists.
+            if (form is MainForm) {
+                // a bit hacky
+                _3rdPartyControllers partyForm = new _3rdPartyControllers();
+                partyForm.CopyCustomControllers();
+                partyForm.CopyBlacklistedControllers();
+            } else {
+                _3rdPartyControllers.LoadIntoProgramLists();
+            }
 
             mgr = new JoyconManager();
             mgr.form = form;
@@ -515,13 +489,19 @@ namespace BetterJoyForCemu {
 
             server.Start(IPAddress.Parse(ConfigurationManager.AppSettings["IP"]), Int32.Parse(ConfigurationManager.AppSettings["Port"]));
 
-            // Capture keyboard + mouse events for binding's sake
-            keyboard = WindowsInput.Capture.Global.KeyboardAsync();
-            keyboard.KeyEvent += Keyboard_KeyEvent;
-            mouse = WindowsInput.Capture.Global.MouseAsync();
-            mouse.MouseEvent += Mouse_MouseEvent;
+            // Global keyboard/mouse hooks need an interactive desktop - fine in GUI mode, but
+            // Session 0 (where a Windows Service runs) has none, so this would throw/do nothing
+            // useful there. Service mode gets its keyboard/mouse remap support from a
+            // session-launched helper process instead (see BetterJoyService/SessionLauncher) -
+            // until that's wired up, service mode simply skips this rather than crash on it.
+            if (form is MainForm) {
+                keyboard = WindowsInput.Capture.Global.KeyboardAsync();
+                keyboard.KeyEvent += Keyboard_KeyEvent;
+                mouse = WindowsInput.Capture.Global.MouseAsync();
+                mouse.MouseEvent += Mouse_MouseEvent;
+            }
 
-            form.console.AppendText("All systems go\r\n");
+            form.AppendTextBox("All systems go\r\n");
         }
 
         private static void Mouse_MouseEvent(object sender, WindowsInput.Events.Sources.EventSourceEventArgs<WindowsInput.Events.Sources.MouseEvent> e) {
@@ -578,20 +558,13 @@ namespace BetterJoyForCemu {
                 hiddenInstanceIds.Clear();
             }
 
-            keyboard.Dispose(); mouse.Dispose();
+            keyboard?.Dispose(); mouse?.Dispose();
             server.Stop();
             mgr.OnApplicationQuit();
         }
 
         private static string appGuid = "1bf709e9-c133-41df-933a-c9ff3f664c7b"; // randomly-generated
         public static void Main(string[] args) {
-
-            // Setting the culturesettings so float gets parsed correctly
-            CultureInfo.CurrentCulture = new CultureInfo("en-US", false);
-
-            // Set the correct DLL for the current OS
-            SetupDlls();
-
             using (Mutex mutex = new Mutex(false, "Global\\" + appGuid)) {
                 if (!mutex.WaitOne(0, false)) {
                     MessageBox.Show("Instance already running.", "BetterJoy");
@@ -600,12 +573,18 @@ namespace BetterJoyForCemu {
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                form = new MainForm();
-                Application.Run(form);
+                MainForm mainForm = new MainForm();
+                form = mainForm;
+                Application.Run(mainForm);
             }
         }
 
-        static void SetupDlls() {
+        // Called from EntryPoint.Main() before branching into GUI/service/input-helper mode, so
+        // every mode gets it - previously lived here and only ran for GUI mode, which meant a
+        // Windows Service (launched via EntryPoint straight into ServiceBase.Run, bypassing this
+        // Main entirely) never got hidapi.dll's directory added to the DLL search path at all,
+        // crashing immediately on the first P/Invoke into it (DllNotFoundException).
+        public static void SetupDlls() {
             string archPath = $"{AppDomain.CurrentDomain.BaseDirectory}{(Environment.Is64BitProcess ? "x64" : "x86")}\\";
             string pathVariable = Environment.GetEnvironmentVariable("PATH");
             pathVariable = $"{archPath};{pathVariable}";
