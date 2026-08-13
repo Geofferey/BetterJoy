@@ -24,6 +24,7 @@ namespace BetterJoyForCemu {
             }
 
             MigrateHidGuardianSettings(userConfigPath);
+            MigratePassiveScanSettings(userConfigPath);
 
             AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", userConfigPath);
         }
@@ -48,6 +49,43 @@ namespace BetterJoyForCemu {
             settings.Remove("PurgeAffectedDevices");
 
             config.Save(ConfigurationSaveMode.Modified);
+        }
+
+        // One-off migration for users upgrading from before PassiveScan/StartInTray moved from
+        // Config.cs's own flat settings file into App.config (so they show up in the settings
+        // panel like everything else). Their AppData config predates both keys entirely - fresh
+        // installs get them from the bundled template and skip this. Config.cs itself is left
+        // untouched (still writes its own now-unused copies), so its value is read here directly
+        // rather than through Config.Init(), which hasn't run yet at this point in startup.
+        private static void MigratePassiveScanSettings(string userConfigPath) {
+            var fileMap = new ExeConfigurationFileMap { ExeConfigFilename = userConfigPath };
+            Configuration config = ConfigurationManager.OpenMappedExeConfiguration(fileMap, ConfigurationUserLevel.None);
+            KeyValueConfigurationCollection settings = config.AppSettings.Settings;
+
+            if (settings["PassiveScan"] != null)
+                return;
+
+            string legacySettingsPath = Path.Combine(AppPaths.DataDir, "settings");
+            string legacyPassiveScan = ReadLegacySettingsValue(legacySettingsPath, "ProgressiveScan");
+            string legacyStartInTray = ReadLegacySettingsValue(legacySettingsPath, "StartInTray");
+
+            settings.Add("PassiveScan", legacyPassiveScan == "0" ? "false" : "true");
+            settings.Add("StartInTray", legacyStartInTray == "1" ? "true" : "false");
+
+            config.Save(ConfigurationSaveMode.Modified);
+        }
+
+        private static string ReadLegacySettingsValue(string path, string key) {
+            if (!File.Exists(path))
+                return null;
+
+            foreach (string line in File.ReadAllLines(path)) {
+                string[] parts = line.Split(new[] { ' ' }, 2);
+                if (parts.Length == 2 && parts[0] == key)
+                    return parts[1];
+            }
+
+            return null;
         }
     }
 }

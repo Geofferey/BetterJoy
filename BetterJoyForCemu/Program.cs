@@ -94,7 +94,7 @@ namespace BetterJoyForCemu {
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
             CleanUp();
-            if (Config.IntValue("ProgressiveScan") == 1) {
+            if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
                 CheckForNewControllers();
             }
         }

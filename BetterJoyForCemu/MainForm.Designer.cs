@@ -30,7 +30,6 @@ namespace BetterJoyForCemu {
             this.contextMenu = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.version_lbl = new System.Windows.Forms.Label();
-            this.passiveScanBox = new System.Windows.Forms.CheckBox();
             this.donationLink = new System.Windows.Forms.LinkLabel();
             this.conCntrls = new System.Windows.Forms.GroupBox();
             this.loc4 = new System.Windows.Forms.Button();
@@ -42,7 +41,6 @@ namespace BetterJoyForCemu {
             this.con2 = new System.Windows.Forms.Button();
             this.con1 = new System.Windows.Forms.Button();
             this.btnTip = new System.Windows.Forms.ToolTip(this.components);
-            this.startInTrayBox = new System.Windows.Forms.CheckBox();
             this.btn_open3rdP = new System.Windows.Forms.Button();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
             this.settingsTable = new System.Windows.Forms.TableLayoutPanel();
@@ -100,23 +98,9 @@ namespace BetterJoyForCemu {
             this.version_lbl.Size = new System.Drawing.Size(28, 13);
             this.version_lbl.TabIndex = 2;
             this.version_lbl.Text = "v7.2";
-            // 
-            // passiveScanBox
-            // 
-            this.passiveScanBox.AutoSize = true;
-            this.passiveScanBox.Checked = true;
-            this.passiveScanBox.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.passiveScanBox.Location = new System.Drawing.Point(12, 247);
-            this.passiveScanBox.Name = "passiveScanBox";
-            this.passiveScanBox.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
-            this.passiveScanBox.Size = new System.Drawing.Size(91, 17);
-            this.passiveScanBox.TabIndex = 4;
-            this.passiveScanBox.Text = "Passive Scan";
-            this.passiveScanBox.UseVisualStyleBackColor = true;
-            this.passiveScanBox.CheckedChanged += new System.EventHandler(this.passiveScanBox_CheckedChanged);
-            // 
+            //
             // donationLink
-            // 
+            //
             this.donationLink.AutoSize = true;
             this.donationLink.Location = new System.Drawing.Point(198, 272);
             this.donationLink.Name = "donationLink";
@@ -228,19 +212,7 @@ namespace BetterJoyForCemu {
             this.con1.TabStop = false;
             this.btnTip.SetToolTip(this.con1, "Click on Joycons to join/split them");
             this.con1.UseVisualStyleBackColor = true;
-            // 
-            // startInTrayBox
-            // 
-            this.startInTrayBox.AutoSize = true;
-            this.startInTrayBox.Location = new System.Drawing.Point(109, 247);
-            this.startInTrayBox.Name = "startInTrayBox";
-            this.startInTrayBox.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
-            this.startInTrayBox.Size = new System.Drawing.Size(83, 17);
-            this.startInTrayBox.TabIndex = 6;
-            this.startInTrayBox.Text = "Start in Tray";
-            this.startInTrayBox.UseVisualStyleBackColor = true;
-            this.startInTrayBox.CheckedChanged += new System.EventHandler(this.startInTrayBox_CheckedChanged);
-            // 
+            //
             // btn_open3rdP
             // 
             this.btn_open3rdP.Location = new System.Drawing.Point(93, 117);
@@ -350,10 +322,8 @@ namespace BetterJoyForCemu {
             this.Controls.Add(this.rightPanel);
             this.Controls.Add(this.AutoCalibrate);
             this.Controls.Add(this.btn_open3rdP);
-            this.Controls.Add(this.startInTrayBox);
             this.Controls.Add(this.conCntrls);
             this.Controls.Add(this.donationLink);
-            this.Controls.Add(this.passiveScanBox);
             this.Controls.Add(this.version_lbl);
             this.Controls.Add(this.console);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
@@ -380,7 +350,6 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.Label version_lbl;
         private System.Windows.Forms.ContextMenuStrip contextMenu;
         private System.Windows.Forms.ToolStripMenuItem exitToolStripMenuItem;
-        private System.Windows.Forms.CheckBox passiveScanBox;
         private System.Windows.Forms.LinkLabel donationLink;
         private System.Windows.Forms.GroupBox conCntrls;
         private System.Windows.Forms.Button con1;
@@ -392,7 +361,6 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.Button loc2;
         private System.Windows.Forms.Button loc1;
         private System.Windows.Forms.ToolTip btnTip;
-        private System.Windows.Forms.CheckBox startInTrayBox;
         private System.Windows.Forms.Button btn_open3rdP;
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.TableLayoutPanel settingsTable;
