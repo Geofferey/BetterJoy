@@ -123,6 +123,29 @@ namespace BetterJoyForCemu {
             return instanceId != null;
         }
 
+        // Walks up the PnP device tree from a HID interface to find the underlying bus (USB or
+        // Bluetooth) it's actually connected through. GetInstanceIdFromInterfaceId only resolves
+        // to the HID-level device node itself (always prefixed "HID\...", for either transport),
+        // not its parent bus device, so checking that string directly never actually
+        // distinguishes USB from Bluetooth - the real answer is a few levels up the tree.
+        private static void GetControllerTransport(string hidPath, out bool isUsb, out bool isBluetooth) {
+            isUsb = false;
+            isBluetooth = false;
+
+            IPnPDevice device = PnPDevice.GetDeviceByInterfaceId(hidPath, DeviceLocationFlags.Normal);
+            for (int depth = 0; device != null && depth < 8; depth++) {
+                if (device.InstanceId.StartsWith("USB", StringComparison.OrdinalIgnoreCase)) {
+                    isUsb = true;
+                    return;
+                }
+                if (device.InstanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase)) {
+                    isBluetooth = true;
+                    return;
+                }
+                device = device.Parent;
+            }
+        }
+
         private ushort TypeToProdId(byte type) {
             switch (type) {
                 case 1:
@@ -190,9 +213,7 @@ namespace BetterJoyForCemu {
                     bool blockedByTransport = false;
                     if (Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddUSB"]) || Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddBluetooth"])) {
                         try {
-                            string instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
-                            bool isUsbDevice = instanceId.StartsWith("USB", StringComparison.OrdinalIgnoreCase);
-                            bool isBluetoothDevice = instanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase);
+                            GetControllerTransport(enumerate.path, out bool isUsbDevice, out bool isBluetoothDevice);
                             blockedByTransport = (isUsbDevice && Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddUSB"])) ||
                                                   (isBluetoothDevice && Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddBluetooth"]));
                         } catch {
@@ -207,6 +228,12 @@ namespace BetterJoyForCemu {
                         _3rdPartyControllers.PersistCustomController(thirdParty);
                         validController = true;
                         form.AppendTextBox("Auto-added new controller: " + thirdParty + "\r\n");
+                    } else {
+                        // Same reasoning as the blacklist case above: BetterJoy won't use this
+                        // device, but the same physical controller may still be reachable
+                        // through it from another program (e.g. Steam) over the transport we're
+                        // not using, so hide it from other programs anyway.
+                        TryHideController(enumerate);
                     }
                 }
 
@@ -544,7 +571,7 @@ namespace BetterJoyForCemu {
         }
 
         public static void Stop() {
-            if (useHidHide && hidHide != null) {
+            if (useHidHide && hidHide != null && Boolean.Parse(ConfigurationManager.AppSettings["UnhideOnExit"])) {
                 foreach (string id in hiddenInstanceIds) {
                     try { hidHide.RemoveBlockedInstanceId(id); } catch { }
                 }

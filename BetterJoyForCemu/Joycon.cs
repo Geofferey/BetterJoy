@@ -572,6 +572,18 @@ namespace BetterJoyForCemu {
         }
 
         private byte ts_en;
+
+        // An occasional duplicate timestamp is normal (we can poll faster than the device
+        // produces new reports); a run of them is not - it means the report stream has
+        // genuinely stalled, which happens when another program (e.g. Steam) grabbed the raw
+        // device before HidHide had a chance to hide it (a real race on a fresh boot/cleared
+        // settings, since HidHide's hidden-device list isn't there yet to fall back on and
+        // Steam may already be running). Detaching and letting the normal reconnect flow
+        // (CleanUp -> rediscovered on the next scan) pick it back up clears the stall in
+        // practice, so treat a short run the same as a connection-loss timeout.
+        private int duplicateTimestampCount = 0;
+        private const int MaxConsecutiveDuplicateTimestamps = 3;
+
         private int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
             byte[] raw_buf = new byte[report_len];
@@ -623,6 +635,15 @@ namespace BetterJoyForCemu {
                 if (ts_en == raw_buf[1] && !(isSnes || is64)) {
                     form.AppendTextBox("Duplicate timestamp enqueued.\r\n");
                     DebugPrint(string.Format("Duplicate timestamp enqueued. TS: {0:X2}", ts_en), DebugType.THREADING);
+
+                    duplicateTimestampCount++;
+                    if (duplicateTimestampCount >= MaxConsecutiveDuplicateTimestamps) {
+                        form.AppendTextBox("Report stream stalled (another program may have grabbed this controller before it was hidden) - reattaching to recover.\r\n");
+                        duplicateTimestampCount = 0;
+                        state = state_.DROPPED;
+                    }
+                } else {
+                    duplicateTimestampCount = 0;
                 }
                 ts_en = raw_buf[1];
                 DebugPrint(string.Format("Enqueue. Bytes read: {0:D}. Timestamp: {1:X2}", ret, raw_buf[1]), DebugType.THREADING);
