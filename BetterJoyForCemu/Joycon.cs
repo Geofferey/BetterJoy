@@ -503,6 +503,25 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Called once this controller (Joycon, Pro, SNES, or N64 - all share this class) has
+        // actually confirmed itself alive (see retiredDuplicates in Poll()). Attach() resolves
+        // the real per-unit MAC address (for a USB connection this is only known once the USB
+        // handshake completes - the HID enumeration serial number USB reports is just a shared
+        // placeholder, not the real MAC). If another already-connected entry turns out to be
+        // this same physical controller over a different transport (e.g. it was connected
+        // wirelessly and has now been plugged in via USB), retire that stale entry now rather
+        // than waiting for its own poll thread to notice the connection went silent - that
+        // window otherwise leaves both the old and new entries live at once, each driving their
+        // own virtual output device (double presses/duplicate input in games).
+        private void RetireDuplicateConnections() {
+            foreach (Joycon other in Program.mgr.j) {
+                if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
+                    other.state = state_.DROPPED;
+                    form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
+                }
+            }
+        }
+
         private void BatteryChanged() { // battery changed level
             foreach (var v in form.con) {
                 if (v.Tag == this) {
@@ -867,6 +886,11 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Guards RetireDuplicateConnections() above so it only ever runs once per controller,
+        // the first time it actually proves itself alive (not merely that Attach() didn't
+        // throw, which happens before the connection is known to be stable/receiving real data).
+        private bool retiredDuplicates = false;
+
         private Thread PollThreadObj;
         private void Poll() {
             stop_polling = false;
@@ -880,6 +904,11 @@ namespace BetterJoyForCemu {
                 if (a > 0 && state > state_.DROPPED) {
                     state = state_.IMU_DATA_OK;
                     attempts = 0;
+
+                    if (!retiredDuplicates) {
+                        retiredDuplicates = true;
+                        RetireDuplicateConnections();
+                    }
                 } else if (attempts > 240) {
                     state = state_.DROPPED;
                     form.AppendTextBox("Dropped.\r\n");
