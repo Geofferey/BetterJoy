@@ -373,6 +373,9 @@ namespace BetterJoyForCemu {
         public static void Start() {
             if (useHidHide) {
                 try {
+                    // HidHide's config lives in a read/write-protected registry key (not file-based,
+                    // intentionally, so it can't be casually edited outside the driver API):
+                    // https://github.com/nefarius/HidHide/discussions/130
                     hidHide = new HidHideControlService();
                     if (!hidHide.IsInstalled) {
                         form.console.AppendText("HidHide isn't installed - controllers won't be hidden from other programs.\r\n");
