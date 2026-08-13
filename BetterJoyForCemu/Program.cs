@@ -174,14 +174,22 @@ namespace BetterJoyForCemu {
                             form.AppendTextBox("Non Joy-Con Nintendo input device skipped.\r\n"); break;
                     }
 
-                    // Hide this controller from other programs (e.g. Steam) via HidHide
+                    // Hide this controller from other programs (e.g. Steam) via HidHide, before
+                    // opening/attaching it ourselves below. A freshly-plugged-in device's PnP
+                    // instance can occasionally not be fully settled yet, which fails this call -
+                    // when that happens, skip attaching it this pass entirely (rather than
+                    // falling through and opening it unhidden) so other programs can't grab the
+                    // raw device and end up double-processing input alongside our virtual output.
+                    // The next periodic scan (2s later) will retry once the device has settled.
                     if (Program.useHidHide) {
                         try {
                             string instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
                             Program.hidHide.AddBlockedInstanceId(instanceId);
                             Program.hiddenInstanceIds.Add(instanceId);
                         } catch {
-                            form.AppendTextBox("Unable to hide controller from other programs.\r\n");
+                            form.AppendTextBox("Controller not ready to hide yet, will retry.\r\n");
+                            ptr = enumerate.next;
+                            continue;
                         }
                     }
                     // -------------------- //
@@ -313,6 +321,22 @@ namespace BetterJoyForCemu {
                     } catch (Exception e) {
                         jc.state = Joycon.state_.DROPPED;
                         continue;
+                    }
+
+                    // Attach() resolves the real per-unit MAC address (for a USB connection this
+                    // is only known now - the HID enumeration serial number USB reports is just a
+                    // shared placeholder, not the real MAC). If another already-connected entry
+                    // turns out to be this same physical controller over a different transport
+                    // (e.g. it was connected wirelessly and has now been plugged in via USB),
+                    // retire that stale entry immediately rather than waiting for its poll thread
+                    // to notice the connection went silent - that window otherwise leaves both the
+                    // old and new entries live at once, each driving their own virtual output
+                    // device (double presses/duplicate input in games).
+                    foreach (Joycon other in j) {
+                        if (other != jc && other.state != Joycon.state_.DROPPED && other.PadMacAddress.Equals(jc.PadMacAddress)) {
+                            other.state = Joycon.state_.DROPPED;
+                            form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
+                        }
                     }
 
                     jc.SetHomeLight(on);

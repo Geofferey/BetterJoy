@@ -2,6 +2,7 @@ using System;
 using System.Configuration;
 using System.IO;
 using System.Reflection;
+using Nefarius.Drivers.HidHide;
 
 namespace BetterJoyForCemu {
     // Real assembly entry point (see BetterJoy.csproj's StartupObject). This has to run before
@@ -17,8 +18,9 @@ namespace BetterJoyForCemu {
 
         private static void RedirectConfigToAppData() {
             string userConfigPath = Path.Combine(AppPaths.DataDir, "BetterJoyForCemu.exe.config");
+            bool isFreshInstall = !File.Exists(userConfigPath);
 
-            if (!File.Exists(userConfigPath)) {
+            if (isFreshInstall) {
                 string bundledConfigPath = Assembly.GetExecutingAssembly().Location + ".config";
                 File.Copy(bundledConfigPath, userConfigPath);
             }
@@ -27,7 +29,34 @@ namespace BetterJoyForCemu {
             MigratePassiveScanSettings(userConfigPath);
             AddMissingSettingsFromTemplate(userConfigPath);
 
+            if (isFreshInstall)
+                DefaultHidHideToInstalledState(userConfigPath);
+
             AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", userConfigPath);
+        }
+
+        // Only for a brand-new install (never run before) - defaults UseHidHide to true if the
+        // HidHide driver is already present on this machine (e.g. the user checked the optional
+        // installer task), so it works out of the box without needing to find the settings
+        // checkbox. Deliberately a one-time default rather than a recurring check: a user
+        // upgrading from HidGuardian keeps whatever MigrateHidGuardianSettings preserved above,
+        // and a user who installs HidHide *after* already having a config (with UseHidHide
+        // explicitly false) won't have that choice silently flipped back on every launch.
+        private static void DefaultHidHideToInstalledState(string userConfigPath) {
+            bool installed;
+            try {
+                installed = new HidHideControlService().IsInstalled;
+            } catch {
+                return;
+            }
+
+            if (!installed)
+                return;
+
+            var fileMap = new ExeConfigurationFileMap { ExeConfigFilename = userConfigPath };
+            Configuration config = ConfigurationManager.OpenMappedExeConfiguration(fileMap, ConfigurationUserLevel.None);
+            config.AppSettings.Settings["UseHidHide"].Value = "true";
+            config.Save(ConfigurationSaveMode.Modified);
         }
 
         // One-off migration for users upgrading from before the HidGuardian -> HidHide switch:
