@@ -723,7 +723,7 @@ namespace BetterJoyForCemu {
 
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && !isPro) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
-                    form.conBtnClick(form.con[PadId], EventArgs.Empty); // trigger connection button click
+                    form.JoinOrSplitJoycon(form.con[PadId]); // trigger connection button click
 
                     lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
                     return;

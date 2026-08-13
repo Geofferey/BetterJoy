@@ -41,13 +41,11 @@ namespace BetterJoyForCemu {
             this.con2 = new System.Windows.Forms.Button();
             this.con1 = new System.Windows.Forms.Button();
             this.btnTip = new System.Windows.Forms.ToolTip(this.components);
-            this.btn_open3rdP = new System.Windows.Forms.Button();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
             this.settingsTable = new System.Windows.Forms.TableLayoutPanel();
             this.rightPanel = new System.Windows.Forms.Panel();
             this.settingsApply = new System.Windows.Forms.Button();
             this.AutoCalibrate = new System.Windows.Forms.Button();
-            this.btn_reassign_open = new System.Windows.Forms.Button();
             this.btn_settings = new System.Windows.Forms.Button();
             this.contextMenu.SuspendLayout();
             this.conCntrls.SuspendLayout();
@@ -56,8 +54,8 @@ namespace BetterJoyForCemu {
             this.SuspendLayout();
             // 
             // console
-            // 
-            this.console.Location = new System.Drawing.Point(12, 141);
+            //
+            this.console.Location = new System.Drawing.Point(12, 117);
             this.console.Multiline = true;
             this.console.Name = "console";
             this.console.ReadOnly = true;
@@ -93,7 +91,7 @@ namespace BetterJoyForCemu {
             // version_lbl
             // 
             this.version_lbl.AutoSize = true;
-            this.version_lbl.Location = new System.Drawing.Point(246, 272);
+            this.version_lbl.Location = new System.Drawing.Point(12, 221);
             this.version_lbl.Name = "version_lbl";
             this.version_lbl.Size = new System.Drawing.Size(28, 13);
             this.version_lbl.TabIndex = 2;
@@ -102,7 +100,7 @@ namespace BetterJoyForCemu {
             // donationLink
             //
             this.donationLink.AutoSize = true;
-            this.donationLink.Location = new System.Drawing.Point(198, 272);
+            this.donationLink.Location = new System.Drawing.Point(198, 248);
             this.donationLink.Name = "donationLink";
             this.donationLink.Padding = new System.Windows.Forms.Padding(0, 0, 0, 10);
             this.donationLink.Size = new System.Drawing.Size(42, 23);
@@ -169,7 +167,6 @@ namespace BetterJoyForCemu {
             // 
             this.con4.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.cross;
             this.con4.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Stretch;
-            this.con4.Enabled = false;
             this.con4.Location = new System.Drawing.Point(200, 20);
             this.con4.Name = "con4";
             this.con4.Size = new System.Drawing.Size(58, 59);
@@ -181,7 +178,6 @@ namespace BetterJoyForCemu {
             // 
             this.con3.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.cross;
             this.con3.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Stretch;
-            this.con3.Enabled = false;
             this.con3.Location = new System.Drawing.Point(136, 20);
             this.con3.Name = "con3";
             this.con3.Size = new System.Drawing.Size(58, 59);
@@ -193,7 +189,6 @@ namespace BetterJoyForCemu {
             // 
             this.con2.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.cross;
             this.con2.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Stretch;
-            this.con2.Enabled = false;
             this.con2.Location = new System.Drawing.Point(72, 20);
             this.con2.Name = "con2";
             this.con2.Size = new System.Drawing.Size(58, 59);
@@ -205,25 +200,13 @@ namespace BetterJoyForCemu {
             // 
             this.con1.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.cross;
             this.con1.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Stretch;
-            this.con1.Enabled = false;
             this.con1.Location = new System.Drawing.Point(6, 20);
             this.con1.Name = "con1";
             this.con1.Size = new System.Drawing.Size(58, 59);
             this.con1.TabIndex = 0;
             this.con1.TabStop = false;
-            this.btnTip.SetToolTip(this.con1, "Click on Joycons to join/split them");
             this.con1.UseVisualStyleBackColor = true;
             //
-            // btn_open3rdP
-            // 
-            this.btn_open3rdP.Location = new System.Drawing.Point(93, 117);
-            this.btn_open3rdP.Name = "btn_open3rdP";
-            this.btn_open3rdP.Size = new System.Drawing.Size(86, 20);
-            this.btn_open3rdP.TabIndex = 7;
-            this.btn_open3rdP.Text = "Add Controllers";
-            this.btn_open3rdP.UseVisualStyleBackColor = true;
-            this.btn_open3rdP.Click += new System.EventHandler(this.btn_open3rdP_Click);
-            // 
             // groupBox1
             // 
             this.groupBox1.Controls.Add(this.settingsTable);
@@ -278,31 +261,21 @@ namespace BetterJoyForCemu {
             // 
             // AutoCalibrate
             // 
-            this.AutoCalibrate.Location = new System.Drawing.Point(212, 117);
+            this.AutoCalibrate.Location = new System.Drawing.Point(12, 117);
             this.AutoCalibrate.Name = "AutoCalibrate";
             this.AutoCalibrate.Size = new System.Drawing.Size(71, 20);
             this.AutoCalibrate.TabIndex = 8;
             this.AutoCalibrate.Text = "Calibrate";
             this.AutoCalibrate.UseVisualStyleBackColor = true;
             this.AutoCalibrate.Click += new System.EventHandler(this.StartCalibrate);
-            // 
-            // btn_reassign_open
-            // 
-            this.btn_reassign_open.Location = new System.Drawing.Point(12, 117);
-            this.btn_reassign_open.Name = "btn_reassign_open";
-            this.btn_reassign_open.Size = new System.Drawing.Size(75, 20);
-            this.btn_reassign_open.TabIndex = 13;
-            this.btn_reassign_open.Text = "Map Buttons";
-            this.btn_reassign_open.UseVisualStyleBackColor = true;
-            this.btn_reassign_open.Click += new System.EventHandler(this.btn_reassign_open_Click);
-            // 
+            //
             // btn_settings
-            // 
+            //
             this.btn_settings.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.gear;
             this.btn_settings.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Zoom;
             this.btn_settings.FlatAppearance.BorderSize = 0;
             this.btn_settings.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
-            this.btn_settings.Location = new System.Drawing.Point(262, 245);
+            this.btn_settings.Location = new System.Drawing.Point(262, 221);
             this.btn_settings.Margin = new System.Windows.Forms.Padding(3, 3, 12, 3);
             this.btn_settings.Name = "btn_settings";
             this.btn_settings.Size = new System.Drawing.Size(19, 19);
@@ -317,12 +290,10 @@ namespace BetterJoyForCemu {
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.AutoSize = true;
             this.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
-            this.ClientSize = new System.Drawing.Size(633, 308);
+            this.ClientSize = new System.Drawing.Size(633, 284);
             this.Controls.Add(this.btn_settings);
-            this.Controls.Add(this.btn_reassign_open);
             this.Controls.Add(this.rightPanel);
             this.Controls.Add(this.AutoCalibrate);
-            this.Controls.Add(this.btn_open3rdP);
             this.Controls.Add(this.conCntrls);
             this.Controls.Add(this.donationLink);
             this.Controls.Add(this.version_lbl);
@@ -362,13 +333,11 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.Button loc2;
         private System.Windows.Forms.Button loc1;
         private System.Windows.Forms.ToolTip btnTip;
-        private System.Windows.Forms.Button btn_open3rdP;
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.TableLayoutPanel settingsTable;
         private System.Windows.Forms.Panel rightPanel;
         private System.Windows.Forms.Button settingsApply;
         private System.Windows.Forms.Button AutoCalibrate;
-        private System.Windows.Forms.Button btn_reassign_open;
         private System.Windows.Forms.Button btn_settings;
     }
 }

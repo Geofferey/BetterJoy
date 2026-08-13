@@ -199,6 +199,7 @@
     </Content>
     <Content Include="Icons\cross.png" />
     <Content Include="Icons\gear.png" />
+    <Content Include="Icons\plus.png" />
     <Content Include="Icons\jc_left_s.png" />
     <Content Include="Icons\jc_right_s.png" />
     <Resource Include="Icons\jc_left.png" />

@@ -74,11 +74,12 @@ namespace BetterJoyForCemu {
                     rem.Add(joycon);
 
                     foreach (Button b in form.con) {
-                        if (b.Enabled & b.Tag == joycon) {
+                        if (b.Tag == joycon) {
                             b.Invoke(new MethodInvoker(delegate {
                                 b.BackColor = System.Drawing.Color.FromArgb(0x00, System.Drawing.SystemColors.Control);
-                                b.Enabled = false;
+                                b.Tag = null;
                                 b.BackgroundImage = Properties.Resources.cross;
+                                form.SetEmptySlotTooltip(b);
                             }));
                             break;
                         }
@@ -208,7 +209,7 @@ namespace BetterJoyForCemu {
                         int ii = -1;
                         foreach (Button v in form.con) {
                             ii++;
-                            if (!v.Enabled) {
+                            if (v.Tag == null) {
                                 System.Drawing.Bitmap temp;
                                 switch (prod_id) {
                                     case (product_l):
@@ -227,9 +228,8 @@ namespace BetterJoyForCemu {
 
                                 v.Invoke(new MethodInvoker(delegate {
                                     v.Tag = j.Last(); // assign controller to button
-                                    v.Enabled = true;
-                                    v.Click += new EventHandler(form.conBtnClick);
                                     v.BackgroundImage = temp;
+                                    form.SetConnectionTooltip(v, j.Last().isPro);
                                 }));
 
                                 form.loc[ii].Invoke(new MethodInvoker(delegate {

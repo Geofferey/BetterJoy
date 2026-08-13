@@ -41,11 +41,28 @@ namespace BetterJoyForCemu {
 
             InitializeComponent();
 
-            if (!allowCalibration)
+            if (!allowCalibration) {
                 AutoCalibrate.Hide();
+            } else {
+                // Calibrate needs its own row now that Map Buttons/Add Controllers (which used
+                // to share this row) are gone - push console (and everything below it) down to
+                // make room, mirroring the collapse this reverses in MainForm_Load.
+                console.Top = AutoCalibrate.Bottom + 4;
+            }
 
             con = new List<Button> { con1, con2, con3, con4 };
             loc = new List<Button> { loc1, loc2, loc3, loc4 };
+
+            // Wired once here (rather than per-connect in Program.cs) so empty slots stay
+            // hoverable/clickable - they start with Tag == null and never get disabled, and
+            // conBtnMouseClick/MouseEnter/MouseLeave branch on that to offer "add a controller"
+            // instead of the connected-controller behavior.
+            foreach (Button v in con) {
+                v.MouseClick += new MouseEventHandler(conBtnMouseClick);
+                v.MouseEnter += new EventHandler(conBtnMouseEnter);
+                v.MouseLeave += new EventHandler(conBtnMouseLeave);
+                SetEmptySlotTooltip(v);
+            }
 
             //list all options
             string[] myConfigs = ConfigurationManager.AppSettings.AllKeys;
@@ -109,13 +126,13 @@ namespace BetterJoyForCemu {
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
             if (!console.Visible) {
                 // Close up the gap console leaves behind by pulling the settings gear/version
-                // label up into the Map Buttons/Add Controllers row instead of leaving them down
-                // where console used to end. The form is AutoSize/GrowAndShrink, so it naturally
-                // shrinks to fit afterward - and grows back to fit rightPanel when settings gets
-                // toggled open later, since that's sized independently of this.
-                btn_settings.Top = btn_reassign_open.Top;
-                version_lbl.Top = btn_reassign_open.Top;
-                version_lbl.Left = btn_settings.Left - version_lbl.Width - 6;
+                // label up into the Calibrate row (empty unless AllowCalibration is on) instead
+                // of leaving them down where console used to end. The form is AutoSize/
+                // GrowAndShrink, so it naturally shrinks to fit afterward - and grows back to
+                // fit rightPanel when settings gets toggled open later, since that's sized
+                // independently of this.
+                btn_settings.Top = AutoCalibrate.Top;
+                version_lbl.Top = AutoCalibrate.Top;
             }
 
             if (Boolean.Parse(ConfigurationManager.AppSettings["StartInTray"])) {
@@ -184,9 +201,51 @@ namespace BetterJoyForCemu {
 
         bool doNotRejoin = Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"]);
 
-        public void conBtnClick(object sender, EventArgs e) {
+        // Left click on any controller (Pro or Joycon) opens Map Buttons; right click on a
+        // Joycon joins/splits it instead (also triggered by double-clicking the stick in
+        // hardware, via JoinOrSplitJoycon directly - see Joycon.cs). Left click on an empty
+        // slot (Tag == null) opens Add Controllers instead.
+        public void conBtnMouseClick(object sender, MouseEventArgs e) {
             Button button = sender as Button;
+            if (button.Tag == null) {
+                if (e.Button == MouseButtons.Left)
+                    btn_open3rdP_Click(sender, e);
+                return;
+            }
 
+            if (button.Tag.GetType() != typeof(Joycon))
+                return;
+
+            if (e.Button == MouseButtons.Right) {
+                JoinOrSplitJoycon(button);
+            } else if (e.Button == MouseButtons.Left) {
+                btn_reassign_open_Click(sender, e);
+            }
+        }
+
+        // Empty slots swap their red X for a plus icon on hover, as a visual hint that
+        // clicking opens Add Controllers (see conBtnMouseClick).
+        public void conBtnMouseEnter(object sender, EventArgs e) {
+            Button button = sender as Button;
+            if (button.Tag == null)
+                button.BackgroundImage = Properties.Resources.plus;
+        }
+
+        public void conBtnMouseLeave(object sender, EventArgs e) {
+            Button button = sender as Button;
+            if (button.Tag == null)
+                button.BackgroundImage = Properties.Resources.cross;
+        }
+
+        public void SetConnectionTooltip(Button button, bool isPro) {
+            btnTip.SetToolTip(button, isPro ? "Left-click to map buttons" : "Right-click to split / left-click to map buttons");
+        }
+
+        public void SetEmptySlotTooltip(Button button) {
+            btnTip.SetToolTip(button, "Add a controller");
+        }
+
+        public void JoinOrSplitJoycon(Button button) {
             if (button.Tag.GetType() == typeof(Joycon)) {
                 Joycon v = (Joycon)button.Tag;
 
