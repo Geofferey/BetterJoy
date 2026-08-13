@@ -6,10 +6,12 @@ updates: https://github.com/nefarius/ViGEmBus/releases
 
 If you're on Win7, please read the instructions on the page.
 
-HIDGuardian is not installed by default anymore because it caused a lot of users a lot of headaches because they didn't know what to do with it. If you require the drivers for it and know what to do with it (eg: use the controllers with Steam games in Big Picture, if you have a Pro Controller + 2 Joycons), look into the HIDGuardian folder.
-Details on using HIDGuardian are on the main README.
+HidHide (https://github.com/nefarius/HidHide) hides the Pro Controller/Joycons from
+other programs entirely (they won't even see the device), which avoids conflicts with
+programs like Steam that fight BetterJoy over the raw HID device the moment they start.
+It's optional - enable it with the "UseHidHide" setting (off by default) and run
+HidHide_1.5.230_x64.exe in this folder.
 
-Note: HIDGuardian itself is also archived/deprecated upstream, superseded by HidHide
-(https://github.com/nefarius/HidHide). It's kept here because BetterJoy's HidGuardian
-integration (Program.cs) talks to HidGuardian's specific HidCerberus.Srv REST API, which
-HidHide doesn't have - migrating is a real code change, not a driver swap.
+Note: this replaces HidGuardian, which used to serve the same purpose. HidGuardian was
+archived/deprecated by its own author, superseded by HidHide, and is no longer bundled
+or supported here.

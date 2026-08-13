@@ -10,12 +10,13 @@ using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using System.ServiceProcess;
 using System.Text;
 using System.Threading;
 using System.Timers;
 using System.Windows.Forms;
 using BetterJoyForCemu.Collections;
+using Nefarius.Drivers.HidHide;
+using Nefarius.Utilities.DeviceManagement.PnP;
 using Nefarius.ViGEm.Client;
 using static BetterJoyForCemu._3rdPartyControllers;
 using static BetterJoyForCemu.HIDapi;
@@ -175,24 +176,14 @@ namespace BetterJoyForCemu {
                             form.AppendTextBox("Non Joy-Con Nintendo input device skipped.\r\n"); break;
                     }
 
-                    // Add controller to block-list for HidGuardian
-                    if (Program.useHIDG) {
-                        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(@"http://localhost:26762/api/v1/hidguardian/affected/add/");
-                        string postData = @"hwids=HID\" + enumerate.path.Split('#')[1].ToUpper();
-                        var data = Encoding.UTF8.GetBytes(postData);
-
-                        request.Method = "POST";
-                        request.ContentType = "application/x-www-form-urlencoded; charset=UTF-8";
-                        request.ContentLength = data.Length;
-
-                        using (var stream = request.GetRequestStream())
-                            stream.Write(data, 0, data.Length);
-
+                    // Hide this controller from other programs (e.g. Steam) via HidHide
+                    if (Program.useHidHide) {
                         try {
-                            var response = (HttpWebResponse)request.GetResponse();
-                            var responseString = new StreamReader(response.GetResponseStream()).ReadToEnd();
+                            string instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
+                            Program.hidHide.AddBlockedInstanceId(instanceId);
+                            Program.hiddenInstanceIds.Add(instanceId);
                         } catch {
-                            form.AppendTextBox("Unable to add controller to block-list.\r\n");
+                            form.AppendTextBox("Unable to hide controller from other programs.\r\n");
                         }
                     }
                     // -------------------- //
@@ -367,15 +358,12 @@ namespace BetterJoyForCemu {
         private static readonly HttpClient client = new HttpClient();
 
         public static JoyconManager mgr;
-        static string pid;
 
         static MainForm form;
 
-        // HidGuardian (and the HidCerberus.Srv REST API this talks to below) is archived/deprecated
-        // upstream, superseded by HidHide (github.com/nefarius/HidHide). HidHide has no REST API and
-        // a different hide-by-device-instance model, so swapping it in means reworking this
-        // integration, not just bundling a newer driver. Planned, not yet done.
-        static public bool useHIDG = Boolean.Parse(ConfigurationManager.AppSettings["UseHIDG"]);
+        static public bool useHidHide = Boolean.Parse(ConfigurationManager.AppSettings["UseHidHide"]);
+        public static IHidHideControlService hidHide;
+        public static readonly List<string> hiddenInstanceIds = new List<string>();
 
         public static List<SController> thirdPartyCons = new List<SController>();
 
@@ -383,42 +371,21 @@ namespace BetterJoyForCemu {
         private static WindowsInput.Events.Sources.IMouseEventSource mouse;
 
         public static void Start() {
-            pid = Process.GetCurrentProcess().Id.ToString(); // get current process id for HidCerberus.Srv
-
-            if (useHIDG) {
-                form.console.AppendText("HidGuardian is enabled.\r\n");
+            if (useHidHide) {
                 try {
-                    var HidCerberusService = new ServiceController("HidCerberus Service");
-                    if (HidCerberusService.Status == ServiceControllerStatus.Stopped) {
-                        form.console.AppendText("HidGuardian was stopped. Starting...\r\n");
-
-                        try {
-                            HidCerberusService.Start();
-                        } catch (Exception e) {
-                            form.console.AppendText("Unable to start HidGuardian - everything should work fine without it, but if you need it, run the app again as an admin.\r\n");
-                            useHIDG = false;
-                        }
+                    hidHide = new HidHideControlService();
+                    if (!hidHide.IsInstalled) {
+                        form.console.AppendText("HidHide isn't installed - controllers won't be hidden from other programs.\r\n");
+                        useHidHide = false;
+                    } else {
+                        string exePath = Process.GetCurrentProcess().MainModule.FileName;
+                        if (!hidHide.ApplicationPaths.Contains(exePath, StringComparer.OrdinalIgnoreCase))
+                            hidHide.AddApplicationPath(exePath);
+                        hidHide.IsActive = true;
                     }
                 } catch (Exception e) {
-                    form.console.AppendText("Unable to start HidGuardian - everything should work fine without it, but if you need it, install it properly as admin.\r\n");
-                    useHIDG = false;
-                }
-
-                HttpWebResponse response;
-                if (Boolean.Parse(ConfigurationManager.AppSettings["PurgeWhitelist"])) {
-                    try {
-                        response = (HttpWebResponse)WebRequest.Create(@"http://localhost:26762/api/v1/hidguardian/whitelist/purge/").GetResponse(); // remove all programs allowed to see controller
-                    } catch (Exception e) {
-                        form.console.AppendText("Unable to purge whitelist.\r\n");
-                        useHIDG = false;
-                    }
-                }
-
-                try {
-                    response = (HttpWebResponse)WebRequest.Create(@"http://localhost:26762/api/v1/hidguardian/whitelist/add/" + pid).GetResponse(); // add BetterJoyForCemu to allowed processes 
-                } catch (Exception e) {
-                    form.console.AppendText("Unable to add program to whitelist.\r\n");
-                    useHIDG = false;
+                    form.console.AppendText("Unable to configure HidHide - everything should work fine without it.\r\n");
+                    useHidHide = false;
                 }
             }
 
@@ -510,18 +477,11 @@ namespace BetterJoyForCemu {
         }
 
         public static void Stop() {
-            if (Program.useHIDG) {
-                try {
-                    HttpWebResponse response = (HttpWebResponse)WebRequest.Create(@"http://localhost:26762/api/v1/hidguardian/whitelist/remove/" + pid).GetResponse();
-                } catch (Exception e) {
-                    form.console.AppendText("Unable to remove program from whitelist.\r\n");
+            if (useHidHide && hidHide != null) {
+                foreach (string id in hiddenInstanceIds) {
+                    try { hidHide.RemoveBlockedInstanceId(id); } catch { }
                 }
-            }
-
-            if (Boolean.Parse(ConfigurationManager.AppSettings["PurgeAffectedDevices"]) && Program.useHIDG) {
-                try {
-                    HttpWebResponse r1 = (HttpWebResponse)WebRequest.Create(@"http://localhost:26762/api/v1/hidguardian/affected/purge/").GetResponse();
-                } catch { }
+                hiddenInstanceIds.Clear();
             }
 
             keyboard.Dispose(); mouse.Dispose();
