@@ -1,5 +1,5 @@
 #define MyAppName "BetterJoy"
-#define MyAppVersion "7.1.1"
+#define MyAppVersion "7.2"
 #define MyAppPublisher "BetterJoy Contributors"
 #define MyAppURL "https://github.com/Geofferey/BetterJoy"
 #define MyAppExeName "BetterJoyForCemu.exe"
