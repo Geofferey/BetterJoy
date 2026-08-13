@@ -97,6 +97,32 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Attempts to hide a device via HidHide, retrying a few times (short delay) within this
+        // pass since a freshly-plugged-in device's PnP instance can occasionally not be settled
+        // yet. Returns true if hidden (or HidHide isn't in use), false if hiding failed after
+        // retries - callers decide what that means for them (e.g. skip attaching this pass, or
+        // for an already-blacklisted device, nothing further at all).
+        private bool TryHideController(hid_device_info enumerate) {
+            if (!Program.useHidHide)
+                return true;
+
+            string instanceId = null;
+            for (int hideAttempt = 0; hideAttempt < 5 && instanceId == null; hideAttempt++) {
+                if (hideAttempt > 0)
+                    Thread.Sleep(50);
+
+                try {
+                    instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
+                    Program.hidHide.AddBlockedInstanceId(instanceId);
+                    Program.hiddenInstanceIds.Add(instanceId);
+                } catch {
+                    instanceId = null;
+                }
+            }
+
+            return instanceId != null;
+        }
+
         private ushort TypeToProdId(byte type) {
             switch (type) {
                 case 1:
@@ -127,6 +153,27 @@ namespace BetterJoyForCemu {
                     continue;
                 }
 
+                // Blacklisted devices (set from the Add Controllers dialog - e.g. a 3rd-party
+                // controller that identifies differently over USB vs Bluetooth, where only one
+                // of those identities should be usable) are skipped unconditionally, ahead of
+                // both the manual custom-controller match and auto-add below. Still hide it from
+                // other programs, though - the same physical controller may be reachable through
+                // this identity from another program (e.g. Steam) while BetterJoy uses a
+                // different transport/identity for it, which would otherwise let that other
+                // program read duplicate raw input alongside BetterJoy's own virtual output.
+                bool isBlacklisted = false;
+                foreach (SController v in Program.blacklistedCons) {
+                    if (enumerate.vendor_id == v.vendor_id && enumerate.product_id == v.product_id && enumerate.serial_number == v.serial_number) {
+                        isBlacklisted = true;
+                        break;
+                    }
+                }
+                if (isBlacklisted) {
+                    TryHideController(enumerate);
+                    ptr = enumerate.next;
+                    continue;
+                }
+
                 bool validController = (enumerate.product_id == product_l || enumerate.product_id == product_r ||
                                         enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id;
                 // check list of custom controllers specified
@@ -140,11 +187,27 @@ namespace BetterJoyForCemu {
 
                 // auto-detect and register new 3rd-party controllers instead of requiring manual setup
                 if (!validController && Boolean.Parse(ConfigurationManager.AppSettings["AutoAddControllers"]) && IsGameController(enumerate)) {
-                    thirdParty = new SController(BuildDeviceName(enumerate), enumerate.vendor_id, enumerate.product_id, GuessType(enumerate), enumerate.serial_number);
-                    Program.thirdPartyCons.Add(thirdParty);
-                    _3rdPartyControllers.PersistCustomController(thirdParty);
-                    validController = true;
-                    form.AppendTextBox("Auto-added new controller: " + thirdParty + "\r\n");
+                    bool blockedByTransport = false;
+                    if (Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddUSB"]) || Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddBluetooth"])) {
+                        try {
+                            string instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
+                            bool isUsbDevice = instanceId.StartsWith("USB", StringComparison.OrdinalIgnoreCase);
+                            bool isBluetoothDevice = instanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase);
+                            blockedByTransport = (isUsbDevice && Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddUSB"])) ||
+                                                  (isBluetoothDevice && Boolean.Parse(ConfigurationManager.AppSettings["BlockAutoAddBluetooth"]));
+                        } catch {
+                            // Can't determine transport - fall through and allow auto-add rather
+                            // than silently blocking a device we couldn't actually classify.
+                        }
+                    }
+
+                    if (!blockedByTransport) {
+                        thirdParty = new SController(BuildDeviceName(enumerate), enumerate.vendor_id, enumerate.product_id, GuessType(enumerate), enumerate.serial_number);
+                        Program.thirdPartyCons.Add(thirdParty);
+                        _3rdPartyControllers.PersistCustomController(thirdParty);
+                        validController = true;
+                        form.AppendTextBox("Auto-added new controller: " + thirdParty + "\r\n");
+                    }
                 }
 
                 ushort prod_id = thirdParty == null ? enumerate.product_id : TypeToProdId(thirdParty.type);
@@ -176,33 +239,15 @@ namespace BetterJoyForCemu {
 
                     // Hide this controller (Joycon, Pro, SNES, or N64 - all share this same
                     // connect path) from other programs (e.g. Steam) via HidHide, before opening/
-                    // attaching it ourselves below. A freshly-plugged-in device's PnP instance
-                    // can occasionally not be fully settled yet, which fails this call - retry a
-                    // few times within this pass (short delay, since that's normally sub-second),
-                    // and if it's still not ready after that, skip attaching it this pass entirely
-                    // (rather than falling through and opening it unhidden) so other programs
-                    // can't grab the raw device and end up double-processing input alongside our
-                    // virtual output. The next periodic scan (2s later) retries again from there.
-                    if (Program.useHidHide) {
-                        string instanceId = null;
-                        for (int hideAttempt = 0; hideAttempt < 5 && instanceId == null; hideAttempt++) {
-                            if (hideAttempt > 0)
-                                Thread.Sleep(50);
-
-                            try {
-                                instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
-                                Program.hidHide.AddBlockedInstanceId(instanceId);
-                                Program.hiddenInstanceIds.Add(instanceId);
-                            } catch {
-                                instanceId = null;
-                            }
-                        }
-
-                        if (instanceId == null) {
-                            form.AppendTextBox("Controller not ready to hide yet, will retry.\r\n");
-                            ptr = enumerate.next;
-                            continue;
-                        }
+                    // attaching it ourselves below. If it's still not ready to hide after a few
+                    // retries, skip attaching it this pass entirely (rather than falling through
+                    // and opening it unhidden) so other programs can't grab the raw device and
+                    // end up double-processing input alongside our virtual output. The next
+                    // periodic scan (2s later) retries again from there.
+                    if (!TryHideController(enumerate)) {
+                        form.AppendTextBox("Controller not ready to hide yet, will retry.\r\n");
+                        ptr = enumerate.next;
+                        continue;
                     }
                     // -------------------- //
 
@@ -383,6 +428,7 @@ namespace BetterJoyForCemu {
         public static readonly List<string> hiddenInstanceIds = new List<string>();
 
         public static List<SController> thirdPartyCons = new List<SController>();
+        public static List<SController> blacklistedCons = new List<SController>();
 
         private static WindowsInput.Events.Sources.IKeyboardEventSource keyboard;
         private static WindowsInput.Events.Sources.IMouseEventSource mouse;
@@ -429,6 +475,7 @@ namespace BetterJoyForCemu {
             // a bit hacky
             _3rdPartyControllers partyForm = new _3rdPartyControllers();
             partyForm.CopyCustomControllers();
+            partyForm.CopyBlacklistedControllers();
 
             mgr = new JoyconManager();
             mgr.form = form;

@@ -51,14 +51,18 @@ namespace BetterJoyForCemu {
         }
 
         static readonly string path;
+        static readonly string blacklistPath;
 
         static _3rdPartyControllers() {
             path = Path.Combine(AppPaths.DataDir, "3rdPartyControllers");
+            blacklistPath = Path.Combine(AppPaths.DataDir, "BlacklistedControllers");
         }
 
         public _3rdPartyControllers() {
             InitializeComponent();
-            list_allControllers.HorizontalScrollbar = true; list_customControllers.HorizontalScrollbar = true;
+            list_allControllers.HorizontalScrollbar = true;
+            list_customControllers.HorizontalScrollbar = true;
+            list_blacklistedControllers.HorizontalScrollbar = true;
 
             chooseType.Items.AddRange(new String[] { "Pro Controller", "Left Joycon", "Right Joycon" });
 
@@ -66,29 +70,43 @@ namespace BetterJoyForCemu {
             group_props.Controls.Add(chooseType);
             group_props.Enabled = false;
 
-            if (File.Exists(path)) {
-                using (StreamReader file = new StreamReader(path)) {
-                    string line = String.Empty;
-                    while ((line = file.ReadLine()) != null && (line != String.Empty)) {
-                        String[] split = line.Split('|');
-                        //won't break existing config file
-                        String serial_number = "";
-                        if (split.Length > 4) {
-                            serial_number = split[4];
-                        }
-                        list_customControllers.Items.Add(new SController(split[0], ushort.Parse(split[1]), ushort.Parse(split[2]), byte.Parse(split[3]), serial_number));
-                    }
-                }
-            }
+            LoadControllerList(path, list_customControllers);
+            LoadControllerList(blacklistPath, list_blacklistedControllers);
 
             CopyCustomControllers();
+            CopyBlacklistedControllers();
             RefreshControllerList();
+        }
+
+        private static void LoadControllerList(string filePath, ListBox target) {
+            if (!File.Exists(filePath))
+                return;
+
+            using (StreamReader file = new StreamReader(filePath)) {
+                string line = String.Empty;
+                while ((line = file.ReadLine()) != null && (line != String.Empty)) {
+                    String[] split = line.Split('|');
+                    //won't break existing config file
+                    String serial_number = "";
+                    if (split.Length > 4) {
+                        serial_number = split[4];
+                    }
+                    target.Items.Add(new SController(split[0], ushort.Parse(split[1]), ushort.Parse(split[2]), byte.Parse(split[3]), serial_number));
+                }
+            }
         }
 
         public void CopyCustomControllers() {
             Program.thirdPartyCons.Clear();
             foreach (SController v in list_customControllers.Items) {
                 Program.thirdPartyCons.Add(v);
+            }
+        }
+
+        public void CopyBlacklistedControllers() {
+            Program.blacklistedCons.Clear();
+            foreach (SController v in list_blacklistedControllers.Items) {
+                Program.blacklistedCons.Add(v);
             }
         }
 
@@ -147,7 +165,7 @@ namespace BetterJoyForCemu {
                 }
 
                 String name = BuildDeviceName(enumerate);
-                if (!ContainsText(list_customControllers, name) && !ContainsText(list_allControllers, name)) {
+                if (!ContainsText(list_customControllers, name) && !ContainsText(list_allControllers, name) && !ContainsText(list_blacklistedControllers, name)) {
                     list_allControllers.Items.Add(new SController(name, enumerate.vendor_id, enumerate.product_id, GuessType(enumerate), enumerate.serial_number));
                     Console.WriteLine("Found controller "+ name);
                 }
@@ -175,13 +193,38 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private void btn_apply_Click(object sender, EventArgs e) {
+        private void btn_blacklist_Click(object sender, EventArgs e) {
+            if (list_allControllers.SelectedItem != null) {
+                list_blacklistedControllers.Items.Add(list_allControllers.SelectedItem);
+                list_allControllers.Items.Remove(list_allControllers.SelectedItem);
+
+                list_allControllers.ClearSelected();
+            }
+        }
+
+        private void btn_unblacklist_Click(object sender, EventArgs e) {
+            if (list_blacklistedControllers.SelectedItem != null) {
+                list_allControllers.Items.Add(list_blacklistedControllers.SelectedItem);
+                list_blacklistedControllers.Items.Remove(list_blacklistedControllers.SelectedItem);
+
+                list_blacklistedControllers.ClearSelected();
+            }
+        }
+
+        private static void SaveControllerList(string filePath, ListBox source) {
             String sc = "";
-            foreach (SController v in list_customControllers.Items) {
+            foreach (SController v in source.Items) {
                 sc += v.Serialise() + "\r\n";
             }
-            File.WriteAllText(path, sc);
+            File.WriteAllText(filePath, sc);
+        }
+
+        private void btn_apply_Click(object sender, EventArgs e) {
+            SaveControllerList(path, list_customControllers);
             CopyCustomControllers();
+
+            SaveControllerList(blacklistPath, list_blacklistedControllers);
+            CopyBlacklistedControllers();
         }
 
         private void btn_applyAndClose_Click(object sender, EventArgs e) {
@@ -224,6 +267,16 @@ namespace BetterJoyForCemu {
         private void list_allControllers_MouseDown(object sender, MouseEventArgs e) {
             if (e.Y > list_allControllers.ItemHeight * list_allControllers.Items.Count)
                 list_allControllers.SelectedItems.Clear();
+        }
+
+        private void list_blacklistedControllers_SelectedValueChanged(object sender, EventArgs e) {
+            if (list_blacklistedControllers.SelectedItem != null)
+                tip_device.Show((list_blacklistedControllers.SelectedItem as SController).name, list_blacklistedControllers);
+        }
+
+        private void list_blacklistedControllers_MouseDown(object sender, MouseEventArgs e) {
+            if (e.Y > list_blacklistedControllers.ItemHeight * list_blacklistedControllers.Items.Count)
+                list_blacklistedControllers.SelectedItems.Clear();
         }
 
         private void chooseType_SelectedValueChanged(object sender, EventArgs e) {
