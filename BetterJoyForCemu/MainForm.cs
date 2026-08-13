@@ -61,9 +61,13 @@ namespace BetterJoyForCemu {
             // Wired once here (rather than per-connect in Program.cs) so empty slots stay
             // hoverable/clickable - they start with Tag == null and never get disabled, and
             // conBtnMouseClick/MouseEnter/MouseLeave branch on that to offer "add a controller"
-            // instead of the connected-controller behavior.
+            // instead of the connected-controller behavior. Uses MouseUp rather than MouseClick:
+            // Button/ButtonBase only synthesizes the compound Click/MouseClick event for the
+            // left mouse button, so a right-click handler on MouseClick silently never fires.
+            // MouseDown/MouseUp aren't synthesized that way and reliably report e.Button for
+            // any button.
             foreach (Button v in con) {
-                v.MouseClick += new MouseEventHandler(conBtnMouseClick);
+                v.MouseUp += new MouseEventHandler(conBtnMouseClick);
                 v.MouseEnter += new EventHandler(conBtnMouseEnter);
                 v.MouseLeave += new EventHandler(conBtnMouseLeave);
                 SetEmptySlotTooltip(v);
@@ -204,8 +208,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-        bool doNotRejoin = Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"]);
-
         // Left click on any controller (Pro or Joycon) opens Map Buttons; right click on a
         // Joycon joins/splits it instead (also triggered by double-clicking the stick in
         // hardware, via JoinOrSplitJoycon directly - see Joycon.cs). Left click on an empty
@@ -250,6 +252,154 @@ namespace BetterJoyForCemu {
             btnTip.SetToolTip(button, "Add a controller");
         }
 
+        // jc_left.png/jc_right.png are drawn as literal left/right halves of one combined-pair
+        // silhouette (their flat edges meet in the middle), so cropping each to its actual
+        // artwork (they're padded within a much larger transparent square canvas), scaling by
+        // height only to keep proportions matching the other slot icons, and flushing each
+        // half against the shared center seam recreates the combined shape within a single
+        // slot - edges touching in the middle, matching margin on the outer edges - instead of
+        // either spanning two slots or looking stretched/warped filling the box edge to edge.
+        public Bitmap ComposeJoinedIcon(int width, int height) {
+            Bitmap leftSource = Properties.Resources.jc_left;
+            Bitmap rightSource = Properties.Resources.jc_right;
+            Rectangle leftBounds = GetOpaqueBounds(leftSource);
+            Rectangle rightBounds = GetOpaqueBounds(rightSource);
+
+            const float fit = 0.58f; // leaves margin similar to the other slot icons, which
+                                      // have padding baked into their own source canvas
+            int halfWidth = width / 2;
+            float targetHeight = height * fit;
+
+            const int seamGap = 1; // small visible gap so the two halves read as distinct icons
+
+            var composite = new Bitmap(width, height);
+            using (Graphics g = Graphics.FromImage(composite)) {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                DrawHalfFlushToSeam(g, leftSource, leftBounds, 0, halfWidth, height, targetHeight, flushRight: true, seamGap: 0);
+                DrawHalfFlushToSeam(g, rightSource, rightBounds, halfWidth, width - halfWidth, height, targetHeight, flushRight: false, seamGap: seamGap);
+            }
+            return composite;
+        }
+
+        private static void DrawHalfFlushToSeam(Graphics g, Bitmap source, Rectangle sourceBounds, int xOffset, int halfWidth, int height, float targetHeight, bool flushRight, int seamGap) {
+            float scale = targetHeight / sourceBounds.Height;
+            int destWidth = Math.Max(1, (int)(sourceBounds.Width * scale));
+            int destHeight = Math.Max(1, (int)(sourceBounds.Height * scale));
+            int destX = flushRight ? xOffset + halfWidth - destWidth : xOffset + seamGap;
+            int destY = (height - destHeight) / 2;
+
+            g.DrawImage(source, new Rectangle(destX, destY, destWidth, destHeight), sourceBounds, GraphicsUnit.Pixel);
+        }
+
+        // Scans a bitmap's alpha channel for the tightest rectangle containing its non-
+        // transparent artwork, so ComposeJoinedIcon can crop out the surrounding padding
+        // instead of relying on hardcoded pixel coordinates tied to one specific asset.
+        private static Rectangle GetOpaqueBounds(Bitmap bitmap) {
+            var data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try {
+                int stride = data.Stride;
+                byte[] pixels = new byte[stride * bitmap.Height];
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+
+                int minX = bitmap.Width, minY = bitmap.Height, maxX = -1, maxY = -1;
+                for (int y = 0; y < bitmap.Height; y++) {
+                    for (int x = 0; x < bitmap.Width; x++) {
+                        byte alpha = pixels[y * stride + x * 4 + 3];
+                        if (alpha > 10) {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+
+                if (maxX < minX || maxY < minY)
+                    return new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+
+                return Rectangle.FromLTRB(minX, minY, maxX + 1, maxY + 1);
+            } finally {
+                bitmap.UnlockBits(data);
+            }
+        }
+
+        // Collapses a newly-joined Joycon pair from their two separate slots into one: the
+        // left half's slot becomes the "primary" showing a composite icon for the pair, and
+        // the right half's slot is freed back to fully empty (available for a new controller),
+        // since the pair now acts as a single virtual controller and doesn't need two slots to
+        // show that.
+        public void CollapseJoinedPairIntoOneSlot(Joycon left, Joycon right) {
+            Button primaryButton = con.Find(b => b.Tag == left);
+            Button secondaryButton = con.Find(b => b.Tag == right);
+            if (primaryButton == null || secondaryButton == null)
+                return;
+
+            primaryButton.BackgroundImage = ComposeJoinedIcon(primaryButton.Width, primaryButton.Height);
+            SetConnectionTooltip(primaryButton, false);
+
+            secondaryButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
+            secondaryButton.Tag = null;
+            secondaryButton.BackgroundImage = Properties.Resources.cross;
+            SetEmptySlotTooltip(secondaryButton);
+        }
+
+        // Finds an empty slot for a Joycon that doesn't currently have its own button - used
+        // when splitting a collapsed pair back apart, or when the hidden half of a pair
+        // survives its partner disconnecting. Mirrors the per-slot wiring Program.cs does for
+        // a fresh connection. Returns false if all 4 slots are occupied.
+        public bool AssignJoyconToSlot(Joycon jc, Bitmap icon) {
+            int index = con.FindIndex(b => b.Tag == null);
+            if (index == -1)
+                return false;
+
+            Button button = con[index];
+            button.Tag = jc;
+            button.BackgroundImage = icon;
+            // Carry over the already-known battery color rather than leaving the freed
+            // slot's default background - BatteryChanged() only reapplies it on the next
+            // battery-level event, which may not come for a while.
+            button.BackColor = jc.battery >= 0 ? Joycon.GetBatteryColor(jc.battery) : Color.FromArgb(0x00, SystemColors.Control);
+            SetConnectionTooltip(button, jc.isPro);
+
+            Button locButton = loc[index];
+            locButton.Tag = button;
+            locButton.Click += new EventHandler(locBtnClickAsync);
+
+            return true;
+        }
+
+        // Called after Program.cs's CleanUp() detaches a dropped Joycon, to fix up whatever
+        // slot(s) it and/or its (former) pair partner were occupying.
+        public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) {
+            Button droppedButton = con.Find(b => b.Tag == dropped);
+
+            if (droppedButton != null) {
+                // dropped was showing on its own slot - solo, Pro, or the primary half of a
+                // collapsed pair. Free that slot...
+                droppedButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
+                droppedButton.Tag = null;
+                droppedButton.BackgroundImage = Properties.Resources.cross;
+                SetEmptySlotTooltip(droppedButton);
+
+                // ...and if it was the primary half of a pair, the hidden secondary half
+                // needs a slot of its own now, since it was never given one.
+                if (survivingPartner != null) {
+                    Bitmap soloIcon = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    if (!AssignJoyconToSlot(survivingPartner, soloIcon))
+                        AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
+                }
+            } else if (survivingPartner != null) {
+                // dropped was the hidden secondary half of a collapsed pair - its partner
+                // (the still-connected primary) just needs to revert from the composite icon
+                // back to its own solo icon.
+                Button survivorButton = con.Find(b => b.Tag == survivingPartner);
+                if (survivorButton != null) {
+                    survivorButton.BackgroundImage = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    SetConnectionTooltip(survivorButton, false);
+                }
+            }
+        }
+
         public void JoinOrSplitJoycon(Button button) {
             if (button.Tag.GetType() == typeof(Joycon)) {
                 Joycon v = (Joycon)button.Tag;
@@ -257,7 +407,7 @@ namespace BetterJoyForCemu {
                 if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
                     bool succ = false;
 
-                    if (Program.mgr.j.Count == 1 || doNotRejoin) { // when want to have a single joycon in vertical mode
+                    if (Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
                         v.other = v; // hacky; implement check in Joycon.cs to account for this
                         succ = true;
                     } else {
@@ -276,10 +426,7 @@ namespace BetterJoyForCemu {
                                     v.out_ds4 = null;
                                 }
 
-                                // setting the other joycon's button image
-                                foreach (Button b in con)
-                                    if (b.Tag == jc)
-                                        b.BackgroundImage = jc.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
+                                CollapseJoinedPairIntoOneSlot(v.isLeft ? v : jc, v.isLeft ? jc : v);
 
                                 succ = true;
                                 break;
@@ -287,22 +434,28 @@ namespace BetterJoyForCemu {
                         }
                     }
 
-                    if (succ)
-                        foreach (Button b in con)
+                    if (succ && v.other == v) // self-pair (single joycon vertical mode) only -
+                        foreach (Button b in con) // a real pair is already handled above
                             if (b.Tag == v)
                                 b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
                 } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
                     ReenableViGEm(v);
                     ReenableViGEm(v.other);
 
-                    button.BackgroundImage = v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    Joycon partner = v.other;
+                    bool wasRealPair = partner != v;
 
-                    foreach (Button b in con)
-                        if (b.Tag == v.other)
-                            b.BackgroundImage = v.other.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    button.BackgroundImage = v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    SetConnectionTooltip(button, false);
 
                     v.other.other = null;
                     v.other = null;
+
+                    if (wasRealPair) {
+                        Bitmap soloIcon = partner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                        if (!AssignJoyconToSlot(partner, soloIcon))
+                            AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
+                    }
                 }
             }
         }

@@ -67,23 +67,20 @@ namespace BetterJoyForCemu {
             List<Joycon> rem = new List<Joycon>();
             foreach (Joycon joycon in j) {
                 if (joycon.state == Joycon.state_.DROPPED) {
+                    // Capture the pair partner (if any) before Detach/nulling below, so
+                    // HandleJoyconDropped can still find whichever slot(s) need fixing up -
+                    // the dropped Joycon's own slot, and/or the surviving partner's.
+                    Joycon partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
+
+                    form.Invoke(new MethodInvoker(delegate {
+                        form.HandleJoyconDropped(joycon, partner);
+                    }));
+
                     if (joycon.other != null)
                         joycon.other.other = null; // The other of the other is the joycon itself
 
                     joycon.Detach(true);
                     rem.Add(joycon);
-
-                    foreach (Button b in form.con) {
-                        if (b.Tag == joycon) {
-                            b.Invoke(new MethodInvoker(delegate {
-                                b.BackColor = System.Drawing.Color.FromArgb(0x00, System.Drawing.SystemColors.Control);
-                                b.Tag = null;
-                                b.BackgroundImage = Properties.Resources.cross;
-                                form.SetEmptySlotTooltip(b);
-                            }));
-                            break;
-                        }
-                    }
 
                     form.AppendTextBox("Removed dropped controller. Can be reconnected.\r\n");
                 }
@@ -255,7 +252,7 @@ namespace BetterJoyForCemu {
                 ptr = enumerate.next;
             }
 
-            if (foundNew) { // attempt to auto join-up joycons on connection
+            if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
                 Joycon temp = null;
                 foreach (Joycon v in j) {
                     // Do not attach two controllers if they are either:
@@ -290,11 +287,11 @@ namespace BetterJoyForCemu {
                         temp.out_xbox = null;
                         temp.out_ds4 = null;
 
-                        foreach (Button b in form.con)
-                            if (b.Tag == v || b.Tag == temp) {
-                                Joycon tt = (b.Tag == v) ? v : (b.Tag == temp) ? temp : v;
-                                b.BackgroundImage = tt.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
-                            }
+                        Joycon left = temp.isLeft ? temp : v;
+                        Joycon right = temp.isLeft ? v : temp;
+                        form.Invoke(new MethodInvoker(delegate {
+                            form.CollapseJoinedPairIntoOneSlot(left, right);
+                        }));
 
                         temp = null;    // repeat
                     }
