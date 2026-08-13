@@ -59,7 +59,7 @@ namespace BetterJoyForCemu {
             // 
             // console
             // 
-            this.console.Location = new System.Drawing.Point(12, 132);
+            this.console.Location = new System.Drawing.Point(12, 141);
             this.console.Multiline = true;
             this.console.Name = "console";
             this.console.ReadOnly = true;
@@ -95,7 +95,7 @@ namespace BetterJoyForCemu {
             // version_lbl
             // 
             this.version_lbl.AutoSize = true;
-            this.version_lbl.Location = new System.Drawing.Point(246, 263);
+            this.version_lbl.Location = new System.Drawing.Point(246, 272);
             this.version_lbl.Name = "version_lbl";
             this.version_lbl.Size = new System.Drawing.Size(28, 13);
             this.version_lbl.TabIndex = 2;
@@ -106,7 +106,7 @@ namespace BetterJoyForCemu {
             this.passiveScanBox.AutoSize = true;
             this.passiveScanBox.Checked = true;
             this.passiveScanBox.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.passiveScanBox.Location = new System.Drawing.Point(12, 238);
+            this.passiveScanBox.Location = new System.Drawing.Point(12, 247);
             this.passiveScanBox.Name = "passiveScanBox";
             this.passiveScanBox.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
             this.passiveScanBox.Size = new System.Drawing.Size(91, 17);
@@ -118,7 +118,7 @@ namespace BetterJoyForCemu {
             // donationLink
             // 
             this.donationLink.AutoSize = true;
-            this.donationLink.Location = new System.Drawing.Point(198, 263);
+            this.donationLink.Location = new System.Drawing.Point(198, 272);
             this.donationLink.Name = "donationLink";
             this.donationLink.Padding = new System.Windows.Forms.Padding(0, 0, 0, 10);
             this.donationLink.Size = new System.Drawing.Size(42, 23);
@@ -139,7 +139,7 @@ namespace BetterJoyForCemu {
             this.conCntrls.Controls.Add(this.con1);
             this.conCntrls.Location = new System.Drawing.Point(12, 9);
             this.conCntrls.Name = "conCntrls";
-            this.conCntrls.Size = new System.Drawing.Size(270, 100);
+            this.conCntrls.Size = new System.Drawing.Size(270, 104);
             this.conCntrls.TabIndex = 0;
             this.conCntrls.TabStop = false;
             this.conCntrls.Text = "Connected Controllers";
@@ -232,7 +232,7 @@ namespace BetterJoyForCemu {
             // startInTrayBox
             // 
             this.startInTrayBox.AutoSize = true;
-            this.startInTrayBox.Location = new System.Drawing.Point(109, 238);
+            this.startInTrayBox.Location = new System.Drawing.Point(109, 247);
             this.startInTrayBox.Name = "startInTrayBox";
             this.startInTrayBox.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
             this.startInTrayBox.Size = new System.Drawing.Size(83, 17);
@@ -243,7 +243,7 @@ namespace BetterJoyForCemu {
             // 
             // btn_open3rdP
             // 
-            this.btn_open3rdP.Location = new System.Drawing.Point(93, 112);
+            this.btn_open3rdP.Location = new System.Drawing.Point(93, 117);
             this.btn_open3rdP.Name = "btn_open3rdP";
             this.btn_open3rdP.Size = new System.Drawing.Size(86, 20);
             this.btn_open3rdP.TabIndex = 7;
@@ -305,7 +305,7 @@ namespace BetterJoyForCemu {
             // 
             // AutoCalibrate
             // 
-            this.AutoCalibrate.Location = new System.Drawing.Point(212, 112);
+            this.AutoCalibrate.Location = new System.Drawing.Point(212, 117);
             this.AutoCalibrate.Name = "AutoCalibrate";
             this.AutoCalibrate.Size = new System.Drawing.Size(71, 20);
             this.AutoCalibrate.TabIndex = 8;
@@ -315,7 +315,7 @@ namespace BetterJoyForCemu {
             // 
             // btn_reassign_open
             // 
-            this.btn_reassign_open.Location = new System.Drawing.Point(12, 112);
+            this.btn_reassign_open.Location = new System.Drawing.Point(12, 117);
             this.btn_reassign_open.Name = "btn_reassign_open";
             this.btn_reassign_open.Size = new System.Drawing.Size(75, 20);
             this.btn_reassign_open.TabIndex = 13;
@@ -325,7 +325,7 @@ namespace BetterJoyForCemu {
             // 
             // btn_settings
             // 
-            this.btn_settings.Location = new System.Drawing.Point(198, 234);
+            this.btn_settings.Location = new System.Drawing.Point(198, 243);
             this.btn_settings.Margin = new System.Windows.Forms.Padding(3, 3, 12, 3);
             this.btn_settings.Name = "btn_settings";
             this.btn_settings.Size = new System.Drawing.Size(84, 22);
