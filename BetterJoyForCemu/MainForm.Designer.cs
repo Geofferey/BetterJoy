@@ -95,7 +95,6 @@ namespace BetterJoyForCemu {
             this.version_lbl.Name = "version_lbl";
             this.version_lbl.Size = new System.Drawing.Size(28, 13);
             this.version_lbl.TabIndex = 2;
-            this.version_lbl.Text = "v7.2";
             //
             // donationLink
             //

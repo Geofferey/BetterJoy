@@ -8,6 +8,7 @@ using System.Data;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -40,6 +41,10 @@ namespace BetterJoyForCemu {
             };
 
             InitializeComponent();
+
+            // Read from the assembly instead of hardcoding a string here, so this can't drift
+            // out of sync with AssemblyInfo.cs's version the way the old static Designer text did.
+            version_lbl.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
             if (!allowCalibration) {
                 AutoCalibrate.Hide();
