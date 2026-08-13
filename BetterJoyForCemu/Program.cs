@@ -384,7 +384,7 @@ namespace BetterJoyForCemu {
                         hidHide.IsActive = true;
                     }
                 } catch (Exception e) {
-                    form.console.AppendText("Unable to configure HidHide - everything should work fine without it.\r\n");
+                    form.console.AppendText("Unable to configure HidHide - everything should work fine without it. (" + e.GetType().Name + ": " + e.Message + ")\r\n");
                     useHidHide = false;
                 }
             }
