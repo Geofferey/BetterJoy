@@ -106,6 +106,8 @@ namespace BetterJoyForCemu {
 
             Program.Start();
 
+            console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
+
             if (Boolean.Parse(ConfigurationManager.AppSettings["StartInTray"])) {
                 HideToTray();
             } else {

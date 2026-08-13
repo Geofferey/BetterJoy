@@ -25,6 +25,7 @@ namespace BetterJoyForCemu {
 
             MigrateHidGuardianSettings(userConfigPath);
             MigratePassiveScanSettings(userConfigPath);
+            AddMissingSettingsFromTemplate(userConfigPath);
 
             AppDomain.CurrentDomain.SetData("APP_CONFIG_FILE", userConfigPath);
         }
@@ -86,6 +87,34 @@ namespace BetterJoyForCemu {
             }
 
             return null;
+        }
+
+        // Catch-all safety net, run after the migrations above: adds any key present in the
+        // bundled template's App.config but missing from the user's copy, seeded with the
+        // template's default. Existing users only ever get their AppData config seeded once (see
+        // the copy-if-missing check above), so every plain new setting added after that point
+        // would otherwise be missing entirely and crash the first thing that Boolean.Parses it -
+        // exactly what happened when PassiveScan/StartInTray shipped without this. Doesn't handle
+        // renames/value-preservation (that's what the bespoke migrations above are for) - just
+        // makes sure a brand new key is never simply absent.
+        private static void AddMissingSettingsFromTemplate(string userConfigPath) {
+            string bundledConfigPath = Assembly.GetExecutingAssembly().Location + ".config";
+            var bundledMap = new ExeConfigurationFileMap { ExeConfigFilename = bundledConfigPath };
+            Configuration bundledConfig = ConfigurationManager.OpenMappedExeConfiguration(bundledMap, ConfigurationUserLevel.None);
+
+            var userMap = new ExeConfigurationFileMap { ExeConfigFilename = userConfigPath };
+            Configuration userConfig = ConfigurationManager.OpenMappedExeConfiguration(userMap, ConfigurationUserLevel.None);
+
+            bool changed = false;
+            foreach (KeyValueConfigurationElement bundledSetting in bundledConfig.AppSettings.Settings) {
+                if (userConfig.AppSettings.Settings[bundledSetting.Key] == null) {
+                    userConfig.AppSettings.Settings.Add(bundledSetting.Key, bundledSetting.Value);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                userConfig.Save(ConfigurationSaveMode.Modified);
         }
     }
 }
