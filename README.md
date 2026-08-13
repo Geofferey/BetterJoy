@@ -2,7 +2,7 @@
   <img src="title.png">
 </p>
 
-# BetterJoy v7.0
+# BetterJoy v7.2
 Allows the Nintendo Switch Pro Controller, Joycons, and Switch SNES controller to be used with [Cemu](http://cemu.info/) using [Cemuhook](https://sshnuke.net/cemuhook/), [Citra](https://citra-emu.org/), [Dolphin](https://dolphin-emu.org/), [Yuzu](https://yuzu-emu.org/), and system-wide with generic XInput support.
 
 It also allows using the gyro to control your mouse and remap the special buttons (SL, SR, Capture) to key bindings of your choice.
@@ -25,6 +25,7 @@ Go to the [Releases tab](https://github.com/Davidobot/BetterJoy/releases/)!
     1. Read the READMEs (they're there for a reason!)
     1. Run *Drivers/ViGEmBus_1.22.0_x64_x86_arm64.exe*
     1. Restart your computer
+    1. Optional: if other programs (e.g. Steam) fight BetterJoy over your controller, run *Drivers/HidHide_1.5.230_x64.exe* and enable "UseHidHide" in the settings panel - this hides the controller from every other program entirely.
 2. Run *BetterJoyForCemu.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work
 3. Connect your controllers.
@@ -37,7 +38,7 @@ Go to the [Releases tab](https://github.com/Davidobot/BetterJoy/releases/)!
 * As of version 3, you can use the pro controller and Joycons as normal xbox controllers on your PC - try it with Steam!
 
 # More Info
-Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll find all sorts of goodness such as the changelog, description of app settings, the FAQ and Problems page, and info on how to make BetterJoy work with Steam *better*.
+Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll find all sorts of goodness such as the changelog, description of app settings, and the FAQ and Problems page. If Steam (or another program) fights BetterJoy over your controller, see the optional HidHide driver mentioned above - it hides the controller from everything except BetterJoy.
 
 # Connecting and Disconnecting the Controller
 ## Bluetooth Mode
@@ -56,10 +57,19 @@ Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll
 
 # Building
 
+## One-click (Windows)
+1. Install **Visual Studio** (Community edition is fine) with the **.NET desktop development** workload -
+   [official guide](https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio).
+2. Get the code via Git or the *Download ZIP* button.
+3. Run **`build.bat`** in the repo root. It locates MSBuild, restores NuGet packages, and builds Release|x64.
+4. If [Inno Setup](https://jrsoftware.org/isdl.php) is also installed, it additionally packages the build into
+   an installer at *Installer\Output\BetterJoy-Setup-VERSION.exe*. If not, this step is skipped and you still
+   get a working build.
+
 ## Visual Studio (IDE)
 
-1. If you didn't already, install **Visual Studio Community 2019** via
-   [the official guide](https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio?view=vs-2019).
+1. If you didn't already, install **Visual Studio Community** via
+   [the official guide](https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio).
    When asked about the workloads, select **.NET Desktop Development**.
 2. Get the code project via Git or by using the *Download ZIP* button.
 3. Open Visual Studio Community and open the solution file (*BetterJoy.sln*).
@@ -69,7 +79,7 @@ Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll
 
 ## Visual Studio Build Tools (CLI)
 1. Download **Visual Studio Build Tools** via
-   [the official link](https://visualstudio.microsoft.com/it/downloads/#build-tools-for-visual-studio-2019).
+   [the official link](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio).
 2. Install **NuGet** by following
    [the official guide](https://docs.microsoft.com/en-us/nuget/install-nuget-client-tools#nugetexe-cli).
    You should follow the section for ***nuget.exe***.
@@ -97,7 +107,7 @@ A massive thanks goes out to [rajkosto](https://github.com/rajkosto/) for puttin
 
 Also I am very grateful to [mfosse](https://github.com/mfosse/JoyCon-Driver) for pointing me in the right direction and to [Looking-Glass](https://github.com/Looking-Glass/JoyconLib) without whom I would not be able to figure anything out. (being honest here - the joycon code is his)
 
-Many thanks to [nefarius](https://github.com/ViGEm/ViGEmBus) for his ViGEm project! Apologies and appreciation go out to [epigramx](https://github.com/epigramx), creator of *WiimoteHook*, for giving me the driver idea and for letting me keep using his installation batch script even though I took it without permission. Thanks go out to [MTCKC](https://github.com/MTCKC/ProconXInput) for inspiration and batch files.
+Many thanks to [nefarius](https://github.com/nefarius) for his ViGEm and [HidHide](https://github.com/nefarius/HidHide) projects! Apologies and appreciation go out to [epigramx](https://github.com/epigramx), creator of *WiimoteHook*, for giving me the driver idea and for letting me keep using his installation batch script even though I took it without permission. Thanks go out to [MTCKC](https://github.com/MTCKC/ProconXInput) for inspiration and batch files.
 
 A last thanks goes out to [dekuNukem](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering) for his documentation, especially on the SPI calibration data and the IMU sensor notes!
 
