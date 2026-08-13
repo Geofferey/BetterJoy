@@ -45,7 +45,6 @@ namespace BetterJoyForCemu {
             this.settingsTable = new System.Windows.Forms.TableLayoutPanel();
             this.rightPanel = new System.Windows.Forms.Panel();
             this.settingsApply = new System.Windows.Forms.Button();
-            this.AutoCalibrate = new System.Windows.Forms.Button();
             this.btn_settings = new System.Windows.Forms.Button();
             this.contextMenu.SuspendLayout();
             this.conCntrls.SuspendLayout();
@@ -257,16 +256,6 @@ namespace BetterJoyForCemu {
             this.settingsApply.Text = "Apply";
             this.settingsApply.UseVisualStyleBackColor = true;
             this.settingsApply.Click += new System.EventHandler(this.settingsApply_Click);
-            // 
-            // AutoCalibrate
-            // 
-            this.AutoCalibrate.Location = new System.Drawing.Point(12, 117);
-            this.AutoCalibrate.Name = "AutoCalibrate";
-            this.AutoCalibrate.Size = new System.Drawing.Size(71, 20);
-            this.AutoCalibrate.TabIndex = 8;
-            this.AutoCalibrate.Text = "Calibrate";
-            this.AutoCalibrate.UseVisualStyleBackColor = true;
-            this.AutoCalibrate.Click += new System.EventHandler(this.StartCalibrate);
             //
             // btn_settings
             //
@@ -292,7 +281,6 @@ namespace BetterJoyForCemu {
             this.ClientSize = new System.Drawing.Size(633, 284);
             this.Controls.Add(this.btn_settings);
             this.Controls.Add(this.rightPanel);
-            this.Controls.Add(this.AutoCalibrate);
             this.Controls.Add(this.conCntrls);
             this.Controls.Add(this.donationLink);
             this.Controls.Add(this.version_lbl);
@@ -336,7 +324,6 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.TableLayoutPanel settingsTable;
         private System.Windows.Forms.Panel rightPanel;
         private System.Windows.Forms.Button settingsApply;
-        private System.Windows.Forms.Button AutoCalibrate;
         private System.Windows.Forms.Button btn_settings;
     }
 }

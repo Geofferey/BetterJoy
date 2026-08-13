@@ -19,9 +19,11 @@ namespace BetterJoyForCemu {
         public bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
         public List<Button> con, loc;
         public bool calibrate;
+        private bool calibrationInProgress = false;
         public List<KeyValuePair<string, float[]>> caliData;
         private Timer countDown;
         private int count;
+        private Timer clickTimer;
         public List<int> xG, yG, zG, xA, yA, zA;
         public bool shakeInputEnabled = Boolean.Parse(ConfigurationManager.AppSettings["EnableShakeInput"]);
         public float shakeSesitivity = float.Parse(ConfigurationManager.AppSettings["ShakeInputSensitivity"]);
@@ -40,20 +42,14 @@ namespace BetterJoyForCemu {
                 new KeyValuePair<string, float[]>("0", new float[6] {0,0,0,-710,0,0})
             };
 
+            clickTimer = new Timer { Interval = 250 };
+            clickTimer.Tick += ClickTimer_Tick;
+
             InitializeComponent();
 
             // Read from the assembly instead of hardcoding a string here, so this can't drift
             // out of sync with AssemblyInfo.cs's version the way the old static Designer text did.
             version_lbl.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
-
-            if (!allowCalibration) {
-                AutoCalibrate.Hide();
-            } else {
-                // Calibrate needs its own row now that Map Buttons/Add Controllers (which used
-                // to share this row) are gone - push console (and everything below it) down to
-                // make room, mirroring the collapse this reverses in MainForm_Load.
-                console.Top = AutoCalibrate.Bottom + 4;
-            }
 
             con = new List<Button> { con1, con2, con3, con4 };
             loc = new List<Button> { loc1, loc2, loc3, loc4 };
@@ -135,13 +131,13 @@ namespace BetterJoyForCemu {
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
             if (!console.Visible) {
                 // Close up the gap console leaves behind by pulling the settings gear/version
-                // label up into the Calibrate row (empty unless AllowCalibration is on) instead
-                // of leaving them down where console used to end. The form is AutoSize/
-                // GrowAndShrink, so it naturally shrinks to fit afterward - and grows back to
-                // fit rightPanel when settings gets toggled open later, since that's sized
-                // independently of this.
-                btn_settings.Top = AutoCalibrate.Top;
-                version_lbl.Top = AutoCalibrate.Top;
+                // label up into its row instead of leaving them down where console used to end.
+                // console.Top itself is the stable anchor here - it doesn't change when Visible
+                // is toggled off. The form is AutoSize/GrowAndShrink, so it naturally shrinks to
+                // fit afterward - and grows back to fit rightPanel when settings gets toggled
+                // open later, since that's sized independently of this.
+                btn_settings.Top = console.Top;
+                version_lbl.Top = console.Top;
             }
 
             if (Boolean.Parse(ConfigurationManager.AppSettings["StartInTray"])) {
@@ -226,8 +222,57 @@ namespace BetterJoyForCemu {
             if (e.Button == MouseButtons.Right) {
                 JoinOrSplitJoycon(button);
             } else if (e.Button == MouseButtons.Left) {
-                btn_reassign_open_Click(sender, e);
+                if (allowCalibration) {
+                    HandlePossibleDoubleClick(button);
+                } else {
+                    btn_reassign_open_Click(sender, e);
+                }
             }
+        }
+
+        // Left-click disambiguation between "map buttons" (single click) and "calibrate"
+        // (double click), only relevant when AllowCalibration is on - otherwise every left
+        // click opens Map Buttons immediately, same as before this existed. A single click is
+        // held for clickTimer's interval to see if a second one follows on the same button
+        // before committing to it - a plain WinForms DoubleClick event isn't usable here since
+        // it fires in addition to, not instead of, the Click for the first press. While waiting,
+        // and for the whole calibration process if a double click is confirmed, the button
+        // flashes the calibrate icon - restored by StartCalibrate/CalcData once calibration
+        // either fails to start or actually finishes (see RestoreCalibrateIcon call sites).
+        private Button calibrateIconButton = null;
+        private Image calibrateIconOriginalImage = null;
+
+        private void HandlePossibleDoubleClick(Button button) {
+            if (clickTimer.Enabled && calibrateIconButton == button) {
+                clickTimer.Stop();
+                StartCalibrate(button, EventArgs.Empty);
+            } else {
+                clickTimer.Stop();
+                RestoreCalibrateIcon();
+
+                calibrateIconButton = button;
+                calibrateIconOriginalImage = button.BackgroundImage;
+                button.BackgroundImage = Properties.Resources.calibrate;
+
+                clickTimer.Start();
+            }
+        }
+
+        private void ClickTimer_Tick(object sender, EventArgs e) {
+            clickTimer.Stop();
+            if (calibrateIconButton != null) {
+                Button button = calibrateIconButton;
+                RestoreCalibrateIcon();
+                btn_reassign_open_Click(button, EventArgs.Empty);
+            }
+        }
+
+        private void RestoreCalibrateIcon() {
+            if (calibrateIconButton != null)
+                calibrateIconButton.BackgroundImage = calibrateIconOriginalImage;
+
+            calibrateIconButton = null;
+            calibrateIconOriginalImage = null;
         }
 
         // Empty slots swap their red X for a plus icon on hover, as a visual hint that
@@ -245,7 +290,10 @@ namespace BetterJoyForCemu {
         }
 
         public void SetConnectionTooltip(Button button, bool isPro) {
-            btnTip.SetToolTip(button, isPro ? "Left-click to map buttons" : "Right-click to split / left-click to map buttons");
+            string tip = isPro ? "Left-click to map buttons" : "Right-click to split / left-click to map buttons";
+            if (allowCalibration)
+                tip += ", double click to calibrate";
+            btnTip.SetToolTip(button, tip);
         }
 
         public void SetEmptySlotTooltip(Button button) {
@@ -543,15 +591,21 @@ namespace BetterJoyForCemu {
             }
         }
         private void StartCalibrate(object sender, EventArgs e) {
+            if (calibrationInProgress) {
+                RestoreCalibrateIcon();
+                return;
+            }
             if (Program.mgr.j.Count == 0) {
                 this.console.Text = "Please connect a single pro controller.";
+                RestoreCalibrateIcon();
                 return;
             }
             if (Program.mgr.j.Count > 1) {
                 this.console.Text = "Please calibrate one controller at a time (disconnect others).";
+                RestoreCalibrateIcon();
                 return;
             }
-            this.AutoCalibrate.Enabled = false;
+            calibrationInProgress = true;
             countDown = new Timer();
             this.count = 4;
             this.CountDown(null, null);
@@ -612,7 +666,8 @@ namespace BetterJoyForCemu {
                 this.console.Text += "Calibration completed!!!" + "\r\n";
                 Config.SaveCaliData(this.caliData);
                 Program.mgr.j.First().getActiveData();
-                this.AutoCalibrate.Enabled = true;
+                calibrationInProgress = false;
+                RestoreCalibrateIcon();
             } else {
                 this.count--;
             }
