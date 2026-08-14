@@ -15,5 +15,26 @@ namespace BetterJoyForCemu {
         void JoinOrSplitJoycon(Joycon joycon);
         void NotifyLowBattery(Joycon joycon);
         void UpdateBatteryColor(Joycon joycon);
+
+        // Keyboard/mouse injection for remap (SL/SR/Capture -> key/mouse bind) and gyro-mouse.
+        // Codes are WindowsInput.Events.KeyCode/ButtonCode cast to int, kept untyped here so this
+        // interface doesn't need a WindowsInput dependency. Needs an interactive desktop to
+        // actually do anything - GUI mode calls WindowsInput.Simulate directly (same as always);
+        // headless/service mode forwards the request over a pipe to a session-launched helper
+        // process that can (see HeadlessJoyconHost/SessionLauncher), since Session 0 has none.
+        void SimulateKeyClick(int keyCode);
+        void SimulateKeyHold(int keyCode);
+        void SimulateKeyRelease(int keyCode);
+        void SimulateButtonClick(int buttonCode);
+        void SimulateButtonHold(int buttonCode);
+        void SimulateButtonRelease(int buttonCode);
+        void SimulateMoveTo(int x, int y);
+        void SimulateMoveBy(int dx, int dy);
+
+        // Deliberately not "SimulateMoveTo(screenWidth/2, screenHeight/2)" computed by the
+        // caller - Screen.PrimaryScreen is only meaningful wherever the actual desktop is, which
+        // for a Windows Service is the session-launched helper, not the service process itself.
+        // Each implementation resolves "center" in its own context.
+        void SimulateMoveToScreenCenter();
     }
 }

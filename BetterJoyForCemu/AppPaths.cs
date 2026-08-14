@@ -1,15 +1,94 @@
 using System;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace BetterJoyForCemu {
     // Program Files (where the app is installed) isn't writable without elevation, so all
-    // runtime-generated state lives in the per-user AppData folder instead.
+    // runtime-generated state lives in AppData/ProgramData instead. Two possible locations:
+    //  - Per-user (%AppData%\BetterJoy) - the default for the GUI, isolated per Windows account.
+    //  - Shared (%ProgramData%\BetterJoy) - used by a Windows Service (which runs as SYSTEM, so
+    //    its own %AppData% is a different, inaccessible profile entirely) and, opt-in, by the
+    //    GUI too (see EnableServiceMode) so that settings changed in the GUI actually reach a
+    //    running service instead of silently landing in a config file the service never reads.
     internal static class AppPaths {
-        public static readonly string DataDir;
+        private const string ServiceModeFlagFileName = "service-mode.enabled";
 
-        static AppPaths() {
-            DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BetterJoy");
-            Directory.CreateDirectory(DataDir);
+        private static string dataDir;
+        public static string DataDir {
+            get {
+                if (dataDir == null)
+                    throw new InvalidOperationException("AppPaths.Initialize must run before DataDir is used.");
+                return dataDir;
+            }
+        }
+
+        private static string PerUserDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BetterJoy");
+        private static string SharedDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BetterJoy");
+
+        // Must run once, before anything else touches DataDir (EntryPoint.Main does this first,
+        // before even redirecting the config file). isServiceProcess is passed in explicitly
+        // rather than detected here - by the time a Windows Service is running, its own %AppData%
+        // resolves to SYSTEM's profile rather than the interactive user's, so "check for a flag
+        // file under %AppData%" wouldn't find anything meaningful for it anyway; a service always
+        // uses the shared location unconditionally.
+        public static void Initialize(bool isServiceProcess) {
+            bool useShared = isServiceProcess || File.Exists(Path.Combine(PerUserDir, ServiceModeFlagFileName));
+            dataDir = useShared ? SharedDir : PerUserDir;
+            Directory.CreateDirectory(dataDir);
+
+            if (useShared)
+                EnsureSharedDirWritableByUsers(dataDir);
+        }
+
+        public static bool ServiceModeEnabled => File.Exists(Path.Combine(PerUserDir, ServiceModeFlagFileName));
+
+        // Called from the GUI (see MainForm) when the user turns on "sync configuration with the
+        // Windows Service" - copies whatever's already in the per-user location into the shared
+        // one (without overwriting anything already there) and drops the flag file, so this and
+        // every future launch (GUI or service) resolves DataDir to the shared location. Doesn't
+        // touch the *current* process's already-resolved DataDir - takes effect next launch.
+        public static void EnableServiceMode() {
+            Directory.CreateDirectory(SharedDir);
+            EnsureSharedDirWritableByUsers(SharedDir);
+
+            if (Directory.Exists(PerUserDir)) {
+                foreach (string file in Directory.GetFiles(PerUserDir)) {
+                    if (Path.GetFileName(file) == ServiceModeFlagFileName)
+                        continue;
+
+                    string dest = Path.Combine(SharedDir, Path.GetFileName(file));
+                    if (!File.Exists(dest))
+                        File.Copy(file, dest);
+                }
+            }
+
+            File.WriteAllText(Path.Combine(PerUserDir, ServiceModeFlagFileName), "");
+        }
+
+        // %ProgramData% is normally writable by regular users out of the box, but whichever
+        // account (SYSTEM via the service, or a regular user via the GUI) happens to create a
+        // given file first can end up owning it with tighter permissions than the other account
+        // needs. Grant BUILTIN\Users modify rights on the folder itself (inherited by anything
+        // created under it) so both sides can always read and write here regardless of creation
+        // order. Best-effort: if this fails (e.g. insufficient privilege), whichever account does
+        // have access still works fine, and a genuine mismatch surfaces as a clear exception on
+        // save rather than failing silently.
+        private static void EnsureSharedDirWritableByUsers(string dir) {
+            try {
+                var dirInfo = new DirectoryInfo(dir);
+                DirectorySecurity security = dirInfo.GetAccessControl();
+                var usersSid = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+                security.AddAccessRule(new FileSystemAccessRule(
+                    usersSid,
+                    FileSystemRights.Modify | FileSystemRights.Synchronize,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+                dirInfo.SetAccessControl(security);
+            } catch {
+                // See comment above - deliberately swallowed.
+            }
         }
     }
 }

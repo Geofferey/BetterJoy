@@ -384,12 +384,18 @@ namespace BetterJoyForCemu {
 
                 v.Detach();
 
+                // A target that was created but never actually got plugged in (or was already
+                // unplugged) throws VigemTargetNotPluggedInException on Disconnect() - same
+                // "wasn't connected in the first place" case already guarded against elsewhere
+                // (see the auto-join block above), just missed here. Left unhandled, this was
+                // surfacing as a failed/hung service stop (DeferredStop propagating the
+                // exception back to the SCM) rather than a clean shutdown.
                 if (v.out_xbox != null) {
-                    v.out_xbox.Disconnect();
+                    try { v.out_xbox.Disconnect(); } catch { }
                 }
 
                 if (v.out_ds4 != null) {
-                    v.out_ds4.Disconnect();
+                    try { v.out_ds4.Disconnect(); } catch { }
                 }
             }
 
@@ -491,63 +497,68 @@ namespace BetterJoyForCemu {
 
             // Global keyboard/mouse hooks need an interactive desktop - fine in GUI mode, but
             // Session 0 (where a Windows Service runs) has none, so this would throw/do nothing
-            // useful there. Service mode gets its keyboard/mouse remap support from a
-            // session-launched helper process instead (see BetterJoyService/SessionLauncher) -
-            // until that's wired up, service mode simply skips this rather than crash on it.
+            // useful there. Service mode instead gets forwarded events over a pipe from a
+            // session-launched helper process that can (see HeadlessJoyconHost/SessionLauncher).
             if (form is MainForm) {
                 keyboard = WindowsInput.Capture.Global.KeyboardAsync();
-                keyboard.KeyEvent += Keyboard_KeyEvent;
+                keyboard.KeyEvent += (sender, e) => {
+                    if (e.Data.KeyDown != null) OnKeyDown((int)e.Data.KeyDown.Key);
+                    if (e.Data.KeyUp != null) OnKeyUp((int)e.Data.KeyUp.Key);
+                };
                 mouse = WindowsInput.Capture.Global.MouseAsync();
-                mouse.MouseEvent += Mouse_MouseEvent;
+                mouse.MouseEvent += (sender, e) => {
+                    if (e.Data.ButtonDown != null) OnMouseButtonDown((int)e.Data.ButtonDown.Button);
+                    if (e.Data.ButtonUp != null) OnMouseButtonUp((int)e.Data.ButtonUp.Button);
+                };
             }
 
             form.AppendTextBox("All systems go\r\n");
         }
 
-        private static void Mouse_MouseEvent(object sender, WindowsInput.Events.Sources.EventSourceEventArgs<WindowsInput.Events.Sources.MouseEvent> e) {
-            if (e.Data.ButtonDown != null) {
-                string res_val = Config.Value("reset_mouse");
-                if (res_val.StartsWith("mse_"))
-                    if ((int)e.Data.ButtonDown.Button == Int32.Parse(res_val.Substring(4)))
-                        WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
+        // Decision logic for the "reset_mouse"/"active_gyro" keyboard/mouse-button binds - kept
+        // independent of *how* the raw key/button event was observed, so both GUI mode's direct
+        // WindowsInput.Capture.Global hook and service mode's pipe-forwarded events from the
+        // session-launched helper can feed into the exact same code.
+        public static void OnKeyDown(int keyCode) {
+            string res_val = Config.Value("reset_mouse");
+            if (res_val.StartsWith("key_"))
+                if (keyCode == Int32.Parse(res_val.Substring(4)))
+                    form.SimulateMoveToScreenCenter();
 
-                res_val = Config.Value("active_gyro");
-                if (res_val.StartsWith("mse_"))
-                    if ((int)e.Data.ButtonDown.Button == Int32.Parse(res_val.Substring(4)))
-                        foreach (var i in mgr.j)
-                            i.active_gyro = true;
-            }
-
-            if (e.Data.ButtonUp != null) {
-                string res_val = Config.Value("active_gyro");
-                if (res_val.StartsWith("mse_"))
-                    if ((int)e.Data.ButtonUp.Button == Int32.Parse(res_val.Substring(4)))
-                        foreach (var i in mgr.j)
-                            i.active_gyro = false;
-            }
+            res_val = Config.Value("active_gyro");
+            if (res_val.StartsWith("key_"))
+                if (keyCode == Int32.Parse(res_val.Substring(4)))
+                    foreach (var i in mgr.j)
+                        i.active_gyro = true;
         }
 
-        private static void Keyboard_KeyEvent(object sender, WindowsInput.Events.Sources.EventSourceEventArgs<WindowsInput.Events.Sources.KeyboardEvent> e) {
-            if (e.Data.KeyDown != null) {
-                string res_val = Config.Value("reset_mouse");
-                if (res_val.StartsWith("key_"))
-                    if ((int)e.Data.KeyDown.Key == Int32.Parse(res_val.Substring(4)))
-                        WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
+        public static void OnKeyUp(int keyCode) {
+            string res_val = Config.Value("active_gyro");
+            if (res_val.StartsWith("key_"))
+                if (keyCode == Int32.Parse(res_val.Substring(4)))
+                    foreach (var i in mgr.j)
+                        i.active_gyro = false;
+        }
 
-                res_val = Config.Value("active_gyro");
-                if (res_val.StartsWith("key_"))
-                    if ((int)e.Data.KeyDown.Key == Int32.Parse(res_val.Substring(4)))
-                        foreach (var i in mgr.j)
-                            i.active_gyro = true;
-            }
+        public static void OnMouseButtonDown(int buttonCode) {
+            string res_val = Config.Value("reset_mouse");
+            if (res_val.StartsWith("mse_"))
+                if (buttonCode == Int32.Parse(res_val.Substring(4)))
+                    form.SimulateMoveToScreenCenter();
 
-            if (e.Data.KeyUp != null) {
-                string res_val = Config.Value("active_gyro");
-                if (res_val.StartsWith("key_"))
-                    if ((int)e.Data.KeyUp.Key == Int32.Parse(res_val.Substring(4)))
-                        foreach (var i in mgr.j)
-                            i.active_gyro = false;
-            }
+            res_val = Config.Value("active_gyro");
+            if (res_val.StartsWith("mse_"))
+                if (buttonCode == Int32.Parse(res_val.Substring(4)))
+                    foreach (var i in mgr.j)
+                        i.active_gyro = true;
+        }
+
+        public static void OnMouseButtonUp(int buttonCode) {
+            string res_val = Config.Value("active_gyro");
+            if (res_val.StartsWith("mse_"))
+                if (buttonCode == Int32.Parse(res_val.Substring(4)))
+                    foreach (var i in mgr.j)
+                        i.active_gyro = false;
         }
 
         public static void Stop() {

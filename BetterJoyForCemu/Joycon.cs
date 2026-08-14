@@ -684,36 +684,36 @@ namespace BetterJoyForCemu {
         Dictionary<int, bool> mouse_toggle_btn = new Dictionary<int, bool>();
         private void Simulate(string s, bool click = true, bool up = false) {
             if (s.StartsWith("key_")) {
-                WindowsInput.Events.KeyCode key = (WindowsInput.Events.KeyCode)Int32.Parse(s.Substring(4));
+                int key = Int32.Parse(s.Substring(4));
                 if (click) {
-                    WindowsInput.Simulate.Events().Click(key).Invoke();
+                    form.SimulateKeyClick(key);
                 } else {
                     if (up) {
-                        WindowsInput.Simulate.Events().Release(key).Invoke();
+                        form.SimulateKeyRelease(key);
                     } else {
-                        WindowsInput.Simulate.Events().Hold(key).Invoke();
+                        form.SimulateKeyHold(key);
                     }
                 }
             } else if (s.StartsWith("mse_")) {
-                WindowsInput.Events.ButtonCode button = (WindowsInput.Events.ButtonCode)Int32.Parse(s.Substring(4));
+                int button = Int32.Parse(s.Substring(4));
                 if (click) {
-                    WindowsInput.Simulate.Events().Click(button).Invoke();
+                    form.SimulateButtonClick(button);
                 } else {
                     if (dragToggle) {
                         if (!up) {
                             bool release;
-                            mouse_toggle_btn.TryGetValue((int)button, out release);
+                            mouse_toggle_btn.TryGetValue(button, out release);
                             if (release)
-                                WindowsInput.Simulate.Events().Release(button).Invoke();
+                                form.SimulateButtonRelease(button);
                             else
-                                WindowsInput.Simulate.Events().Hold(button).Invoke();
-                            mouse_toggle_btn[(int)button] = !release;
+                                form.SimulateButtonHold(button);
+                            mouse_toggle_btn[button] = !release;
                         }
                     } else {
                         if (up) {
-                            WindowsInput.Simulate.Events().Release(button).Invoke();
+                            form.SimulateButtonRelease(button);
                         } else {
-                            WindowsInput.Simulate.Events().Hold(button).Invoke();
+                            form.SimulateButtonHold(button);
                         }
                     }
                 }
@@ -891,7 +891,7 @@ namespace BetterJoyForCemu {
                         dy = (int)-(GyroMouseSensitivityY * (gyr_g.Y * dt));
                     }
 
-                    WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
+                    form.SimulateMoveBy(dx, dy);
                 }
 
                 // reset mouse position to centre of primary monitor
@@ -899,7 +899,7 @@ namespace BetterJoyForCemu {
                 if (res_val.StartsWith("joy_")) {
                     int i = Int32.Parse(res_val.Substring(4));
                     if (buttons_down[i] || (other != null && other.buttons_down[i]))
-                        WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
+                        form.SimulateMoveToScreenCenter();
                 }
             }
         }

@@ -149,6 +149,8 @@
     <Compile Include="HeadlessJoyconHost.cs" />
     <Compile Include="HIDapi.cs" />
     <Compile Include="IJoyconHost.cs" />
+    <Compile Include="InputHelper.cs" />
+    <Compile Include="InputIpcProtocol.cs" />
     <Compile Include="Joycon.cs" />
     <Compile Include="MadgwickAHRS.cs" />
     <Compile Include="MainForm.cs">
@@ -170,6 +172,7 @@
     <Compile Include="Reassign.Designer.cs">
       <DependentUpon>Reassign.cs</DependentUpon>
     </Compile>
+    <Compile Include="SessionLauncher.cs" />
     <Compile Include="UpdServer.cs" />
   </ItemGroup>
   <ItemGroup>

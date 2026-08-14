@@ -14,6 +14,15 @@ namespace BetterJoyForCemu {
     internal static class EntryPoint {
         [STAThread]
         static void Main(string[] args) {
+            // The input helper (see InputHelper/SessionLauncher) is a session-launched instance
+            // of this same exe whose only job is forwarding keyboard/mouse events over a pipe to
+            // a running service - it never touches hidapi, config, or the DLL search path setup
+            // below, so it branches out before any of that runs.
+            if (args.Length >= 2 && args[0].Equals("-inputhelper", StringComparison.OrdinalIgnoreCase)) {
+                InputHelper.Run(args[1]);
+                return;
+            }
+
             // Both of these used to happen inside Program.Main() itself, which only the GUI path
             // ever calls - a Windows Service goes straight into ServiceBase.Run below, bypassing
             // Program.Main entirely, so it never got hidapi.dll's directory added to the DLL
@@ -22,12 +31,18 @@ namespace BetterJoyForCemu {
             CultureInfo.CurrentCulture = new CultureInfo("en-US", false);
             Program.SetupDlls();
 
-            RedirectConfigToAppData();
-
             // "-service" is how the SCM launches BetterJoyForCemu.exe as a Windows Service (see
             // Installer/BetterJoy.iss's sc.exe create binPath) - runs the same core pipeline
             // headlessly instead of the normal WinForms GUI. Not something a user passes by hand.
             bool runAsService = Array.Exists(args, arg => arg.Equals("-service", StringComparison.OrdinalIgnoreCase));
+
+            // Must run before anything (including RedirectConfigToAppData below) touches
+            // AppPaths.DataDir - decides whether this run uses the per-user or the
+            // shared/service-synced location (see AppPaths.Initialize).
+            AppPaths.Initialize(runAsService);
+
+            RedirectConfigToAppData();
+
             if (runAsService) {
                 ServiceBase.Run(new BetterJoyService());
             } else {

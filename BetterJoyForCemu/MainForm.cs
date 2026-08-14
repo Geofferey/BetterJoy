@@ -39,6 +39,11 @@ namespace BetterJoyForCemu {
             // out of sync with AssemblyInfo.cs's version the way the old static Designer text did.
             version_lbl.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
+            if (AppPaths.ServiceModeEnabled) {
+                btn_enableServiceMode.Text = "Config Synced with Service";
+                btn_enableServiceMode.Enabled = false;
+            }
+
             con = new List<Button> { con1, con2, con3, con4 };
             loc = new List<Button> { loc1, loc2, loc3, loc4 };
 
@@ -171,6 +176,44 @@ namespace BetterJoyForCemu {
                 return;
             }
             console.AppendText(value);
+        }
+
+        // GUI mode always has an interactive desktop of its own, so these just call
+        // WindowsInput.Simulate directly - same as this code always has.
+        public void SimulateKeyClick(int keyCode) {
+            WindowsInput.Simulate.Events().Click((WindowsInput.Events.KeyCode)keyCode).Invoke();
+        }
+
+        public void SimulateKeyHold(int keyCode) {
+            WindowsInput.Simulate.Events().Hold((WindowsInput.Events.KeyCode)keyCode).Invoke();
+        }
+
+        public void SimulateKeyRelease(int keyCode) {
+            WindowsInput.Simulate.Events().Release((WindowsInput.Events.KeyCode)keyCode).Invoke();
+        }
+
+        public void SimulateButtonClick(int buttonCode) {
+            WindowsInput.Simulate.Events().Click((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+        }
+
+        public void SimulateButtonHold(int buttonCode) {
+            WindowsInput.Simulate.Events().Hold((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+        }
+
+        public void SimulateButtonRelease(int buttonCode) {
+            WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+        }
+
+        public void SimulateMoveTo(int x, int y) {
+            WindowsInput.Simulate.Events().MoveTo(x, y).Invoke();
+        }
+
+        public void SimulateMoveBy(int dx, int dy) {
+            WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
+        }
+
+        public void SimulateMoveToScreenCenter() {
+            WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
         }
 
         bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
@@ -564,6 +607,41 @@ namespace BetterJoyForCemu {
             ConfigurationManager.AppSettings["AutoPowerOff"] = "false";  // Prevent joycons poweroff when applying settings
             Application.Restart();
             Environment.Exit(0);
+        }
+
+        // Copies the GUI's per-user config/calibration/controller lists to the shared location
+        // (%ProgramData%\BetterJoy) a Windows Service uses (see AppPaths.EnableServiceMode),
+        // and switches this and future GUI launches to read/write there too - otherwise settings
+        // changed here would never be seen by a running service at all, since it runs as SYSTEM
+        // and has its own separate profile.
+        private void btn_enableServiceMode_Click(object sender, EventArgs e) {
+            if (AppPaths.ServiceModeEnabled) {
+                MessageBox.Show("Configuration is already shared with the Windows Service.", "BetterJoy");
+                return;
+            }
+
+            DialogResult result = MessageBox.Show(
+                "This copies your current settings, calibration data, and controller lists to a " +
+                "shared location (%ProgramData%\\BetterJoy) so a Windows Service running BetterJoy " +
+                "can use the same configuration. Continue?",
+                "Sync Config with Service", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (result != DialogResult.Yes)
+                return;
+
+            try {
+                AppPaths.EnableServiceMode();
+                btn_enableServiceMode.Text = "Config Synced with Service";
+                btn_enableServiceMode.Enabled = false;
+
+                MessageBox.Show(
+                    "Done - restart BetterJoy for this to take effect. If the Windows Service " +
+                    "isn't installed yet, run this from an elevated PowerShell/cmd:\r\n\r\n" +
+                    "sc create BetterJoy binPath= \"\\\"" + Application.ExecutablePath + "\\\" -service\" start= auto",
+                    "BetterJoy");
+            } catch (Exception ex) {
+                MessageBox.Show("Failed to sync configuration: " + ex.Message, "BetterJoy");
+            }
         }
 
         void ReenableViGEm(Joycon v) {

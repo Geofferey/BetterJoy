@@ -45,6 +45,7 @@ namespace BetterJoyForCemu {
             this.settingsTable = new System.Windows.Forms.TableLayoutPanel();
             this.rightPanel = new System.Windows.Forms.Panel();
             this.settingsApply = new System.Windows.Forms.Button();
+            this.btn_enableServiceMode = new System.Windows.Forms.Button();
             this.btn_settings = new System.Windows.Forms.Button();
             this.contextMenu.SuspendLayout();
             this.conCntrls.SuspendLayout();
@@ -234,8 +235,9 @@ namespace BetterJoyForCemu {
             this.settingsTable.TabIndex = 1;
             // 
             // rightPanel
-            // 
+            //
             this.rightPanel.Controls.Add(this.settingsApply);
+            this.rightPanel.Controls.Add(this.btn_enableServiceMode);
             this.rightPanel.Controls.Add(this.groupBox1);
             this.rightPanel.Location = new System.Drawing.Point(289, 0);
             this.rightPanel.Margin = new System.Windows.Forms.Padding(2, 2, 12, 2);
@@ -243,9 +245,9 @@ namespace BetterJoyForCemu {
             this.rightPanel.Size = new System.Drawing.Size(312, 273);
             this.rightPanel.TabIndex = 11;
             this.rightPanel.Visible = false;
-            // 
+            //
             // settingsApply
-            // 
+            //
             this.settingsApply.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
             this.settingsApply.Font = new System.Drawing.Font("Microsoft Sans Serif", 8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.settingsApply.Location = new System.Drawing.Point(246, 252);
@@ -256,6 +258,19 @@ namespace BetterJoyForCemu {
             this.settingsApply.Text = "Apply";
             this.settingsApply.UseVisualStyleBackColor = true;
             this.settingsApply.Click += new System.EventHandler(this.settingsApply_Click);
+            //
+            // btn_enableServiceMode
+            //
+            this.btn_enableServiceMode.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left)));
+            this.btn_enableServiceMode.Font = new System.Drawing.Font("Microsoft Sans Serif", 8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.btn_enableServiceMode.Location = new System.Drawing.Point(3, 252);
+            this.btn_enableServiceMode.Margin = new System.Windows.Forms.Padding(2);
+            this.btn_enableServiceMode.Name = "btn_enableServiceMode";
+            this.btn_enableServiceMode.Size = new System.Drawing.Size(150, 21);
+            this.btn_enableServiceMode.TabIndex = 12;
+            this.btn_enableServiceMode.Text = "Sync Config with Service";
+            this.btn_enableServiceMode.UseVisualStyleBackColor = true;
+            this.btn_enableServiceMode.Click += new System.EventHandler(this.btn_enableServiceMode_Click);
             //
             // btn_settings
             //
@@ -324,6 +339,7 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.TableLayoutPanel settingsTable;
         private System.Windows.Forms.Panel rightPanel;
         private System.Windows.Forms.Button settingsApply;
+        private System.Windows.Forms.Button btn_enableServiceMode;
         private System.Windows.Forms.Button btn_settings;
     }
 }
