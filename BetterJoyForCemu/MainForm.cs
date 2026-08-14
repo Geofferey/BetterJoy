@@ -133,9 +133,10 @@ namespace BetterJoyForCemu {
             // service). Gating this on AppPaths.ServiceModeEnabled meant a GUI that never had
             // "Sync Config with Service" clicked would always run its own pipeline even with the
             // service already running - exactly the duplicate-controller bug this exists to fix.
-            if (IsBetterJoyServiceRunning()) {
+            bool serviceReportedRunning = IsBetterJoyServiceRunning();
+            if (serviceReportedRunning) {
                 serviceClient = new ServiceControlClient();
-                isRemoteMode = serviceClient.Connect();
+                isRemoteMode = TryConnectWithRetries(serviceClient);
             }
 
             if (isRemoteMode) {
@@ -159,6 +160,19 @@ namespace BetterJoyForCemu {
                     AppendTextBox("Config isn't synced with the service yet - settings/remap changes made here won't reach it until you use \"Sync Config with Service\".\r\n");
 
                 serviceClient.RequestSnapshot();
+            } else if (serviceReportedRunning) {
+                // The SCM says the service is Running, but its control pipe never answered
+                // after retries - an ambiguous state (AV/firewall interference, pipe instance
+                // exhaustion, some transient error), not evidence the service is actually down.
+                // Falling back to a local pipeline here would risk exactly the duplicate-
+                // controller conflict this whole mode exists to prevent, so refuse instead:
+                // no local pipeline, no remote status - just wait for a restart of either side.
+                AppendTextBox("The BetterJoy service appears to be running, but its status connection couldn't be reached. Not starting local controller support, to avoid conflicting with it - restart BetterJoy (or the service) to retry.\r\n");
+                MessageBox.Show(
+                    "The BetterJoy service appears to be running, but this window couldn't reach its status connection. " +
+                    "To avoid creating a duplicate virtual controller, this window will not take over the controllers itself.\r\n\r\n" +
+                    "Restart BetterJoy (or the service) to retry.",
+                    "BetterJoy");
             } else {
                 Program.Start();
             }
@@ -270,6 +284,22 @@ namespace BetterJoyForCemu {
             } catch {
                 return false; // not installed, access denied, etc. - fall back to running locally
             }
+        }
+
+        // A handful of quick retries covers the narrow legitimate race (the service was
+        // reported Running an instant before its control pipe is actually ready to accept -
+        // though in practice StartControlServer runs synchronously before OnStart even returns,
+        // so this window is mostly theoretical) without turning a startup that's ultimately
+        // going to fail into a long hang.
+        private static bool TryConnectWithRetries(ServiceControlClient client, int attempts = 3, int perAttemptTimeoutMs = 1000, int delayBetweenAttemptsMs = 500) {
+            for (int attempt = 0; attempt < attempts; attempt++) {
+                if (client.Connect(perAttemptTimeoutMs))
+                    return true;
+
+                if (attempt < attempts - 1)
+                    System.Threading.Thread.Sleep(delayBetweenAttemptsMs);
+            }
+            return false;
         }
 
         // All ServiceControlClient events fire from a background read thread - each handler
