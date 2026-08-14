@@ -37,7 +37,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
-Name: "service"; Description: "Run BetterJoy as a Windows Service (starts before login; keyboard/mouse remap not yet supported in this mode)"; GroupDescription: "Advanced:"; Flags: unchecked
+Name: "service"; Description: "Run BetterJoy as a Windows Service (starts before login)"; GroupDescription: "Advanced:"; Flags: unchecked
 
 [Files]
 ; Everything from the Release build, except runtime-generated state that shouldn't ship pre-populated
@@ -69,6 +69,65 @@ Type: filesandordirs; Name: "{app}"
 // instead of it being silently lost.
 var
   HidHideExitCode: Integer;
+  WasServiceRunningBeforeUpgrade: Boolean;
+
+// Real service-status polling via the SCM API - sc.exe stop only requests the stop and returns
+// as soon as the SCM acknowledges the request, not once the service has actually finished
+// shutting down (BetterJoyService.OnStop does real cleanup: unhiding HidHide devices,
+// disconnecting ViGEm targets, stopping timers - not instant). Waiting merely for the sc.exe
+// process to exit isn't the same as waiting for the file locks it's holding to be released.
+const
+  SC_MANAGER_CONNECT = $0001;
+  SERVICE_QUERY_STATUS = $0004;
+  SERVICE_STOPPED = 1;
+  SERVICE_RUNNING = 4;
+
+type
+  SERVICE_STATUS = record
+    dwServiceType: LongWord;
+    dwCurrentState: LongWord;
+    dwControlsAccepted: LongWord;
+    dwWin32ExitCode: LongWord;
+    dwServiceSpecificExitCode: LongWord;
+    dwCheckPoint: LongWord;
+    dwWaitHint: LongWord;
+  end;
+
+function OpenSCManagerW(lpMachineName, lpDatabaseName: string; dwDesiredAccess: LongWord): LongWord;
+  external 'OpenSCManagerW@advapi32.dll stdcall';
+function OpenServiceW(hSCManager: LongWord; lpServiceName: string; dwDesiredAccess: LongWord): LongWord;
+  external 'OpenServiceW@advapi32.dll stdcall';
+function QueryServiceStatus(hService: LongWord; var lpServiceStatus: SERVICE_STATUS): BOOL;
+  external 'QueryServiceStatus@advapi32.dll stdcall';
+function CloseServiceHandle(hSCObject: LongWord): BOOL;
+  external 'CloseServiceHandle@advapi32.dll stdcall';
+
+// Returns the service's current SERVICE_* state, or 0 if it isn't installed / can't be queried
+// (never installed, access denied, etc.) - 0 isn't a real SERVICE_* value, so callers can treat
+// it as "unknown/absent" without confusing it for a real state.
+function GetServiceState(ServiceName: string): LongWord;
+var
+  SCManager, Service: LongWord;
+  Status: SERVICE_STATUS;
+begin
+  Result := 0;
+  SCManager := OpenSCManagerW('', '', SC_MANAGER_CONNECT);
+  if SCManager = 0 then
+    exit;
+  try
+    Service := OpenServiceW(SCManager, ServiceName, SERVICE_QUERY_STATUS);
+    if Service = 0 then
+      exit;
+    try
+      if QueryServiceStatus(Service, Status) then
+        Result := Status.dwCurrentState;
+    finally
+      CloseServiceHandle(Service);
+    end;
+  finally
+    CloseServiceHandle(SCManager);
+  end;
+end;
 
 procedure InstallHidHide;
 var
@@ -86,6 +145,11 @@ end;
 // quoted) exe path followed by " -service" - the outer quotes let the command-line parser
 // treat the whole thing as one token for sc.exe, the escaped inner quotes are what sc.exe
 // itself then records as the actual service binary path.
+// Fresh install/re-selecting the task always (re)creates the service from scratch. An upgrade
+// that *doesn't* have the task selected but had the service running before StopExistingService
+// touched it just gets restarted as-is - it already exists, so there's nothing to (re)create,
+// only to bring back to how it was found. A service that was already stopped (or never
+// installed) before this run is left alone either way, respecting whatever the user had.
 procedure InstallService;
 var
   ResultCode: Integer;
@@ -96,17 +160,36 @@ begin
     Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Exec(ExpandConstant('{sys}\sc.exe'), 'description BetterJoy "Nintendo Switch controller service"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end else if WasServiceRunningBeforeUpgrade then begin
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
-// Best-effort, before files are copied: an existing installed service still running keeps
+// Before files are copied: an existing installed service still running keeps
 // BetterJoyForCemu.exe/its DLLs locked, which fails the file-copy step outright rather than a
-// clean upgrade. Silently does nothing if the service was never installed or wasn't running.
+// clean upgrade. Records whether it was actually running first, so InstallService can restore
+// that afterward regardless of whether the "service" task happens to be selected this run -
+// otherwise an upgrade where that box isn't re-checked would silently leave a previously-
+// running service stopped. Does nothing if the service was never installed or wasn't running.
 procedure StopExistingService;
 var
   ResultCode: Integer;
+  Attempts: Integer;
 begin
+  WasServiceRunningBeforeUpgrade := (GetServiceState('BetterJoy') = SERVICE_RUNNING);
+  if not WasServiceRunningBeforeUpgrade then
+    exit;
+
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Poll for the service to actually reach SERVICE_STOPPED, not just for the sc.exe command to
+  // return - up to 10 seconds, then give up and let the file copy fail loudly if it must rather
+  // than hang the installer indefinitely on a service that's stuck shutting down.
+  Attempts := 0;
+  while (GetServiceState('BetterJoy') <> SERVICE_STOPPED) and (Attempts < 50) do begin
+    Sleep(200);
+    Attempts := Attempts + 1;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
