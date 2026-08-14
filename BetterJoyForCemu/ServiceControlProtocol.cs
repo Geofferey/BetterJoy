@@ -13,12 +13,14 @@ namespace BetterJoyForCemu {
         CalibrationStarted = 2,
         CalibrationComplete = 3,
         CalibrationFailed = 4,
+        CalibrationStep = 5,
 
         // GUI -> service
         RequestSnapshot = 10,
         TestRumble = 11,
         JoinOrSplit = 12,
         StartCalibration = 13,
+        CalibrationReady = 14, // user clicked "OK" on the current step - see CalibrationStep
     }
 
     public enum ControllerKind : byte {
@@ -55,6 +57,28 @@ namespace BetterJoyForCemu {
         }
     }
 
+    // Start/Done: no time limit at all - the GUI shows a button and the service just waits
+    // (CalibrationReady) for the user to click it, however long that takes. Countdown is the one
+    // exception (gyro's actual hold-still measurement): the user can't be clicking anything on
+    // the PC while proving the controller is sitting untouched, so that phase runs on a fixed
+    // server-side timer instead, and Count carries its remaining whole seconds purely for
+    // display - the GUI ticks its own once-per-second cosmetic countdown from it rather than the
+    // service pushing a message every second.
+    public enum CalibStepUiMode : byte { Start, Done, Countdown }
+
+    // One step/phase transition of a calibration run in progress - see HeadlessJoyconHost's
+    // StartCalibration (the source of truth for step names/instruction text) and MainForm's
+    // CalibrationDialog (the passive renderer of whatever arrives here).
+    public struct CalibrationStepInfo {
+        public int PadId;
+        public int StepNumber;
+        public int TotalSteps;
+        public string StepName;
+        public string Instruction;
+        public CalibStepUiMode UiMode;
+        public int Count; // only meaningful when UiMode == Countdown
+    }
+
     public static class ServiceControlIpc {
         // Fixed and well-known (unlike the per-session input-helper pipe) - the GUI needs to
         // find this without being told a name, since it isn't the one that launched the service.
@@ -85,6 +109,30 @@ namespace BetterJoyForCemu {
         public static void WriteSimple(BinaryWriter writer, ControlMessageType type) {
             writer.Write((byte)type);
             writer.Flush();
+        }
+
+        public static void WriteCalibrationStep(BinaryWriter writer, CalibrationStepInfo step) {
+            writer.Write((byte)ControlMessageType.CalibrationStep);
+            writer.Write((byte)step.PadId);
+            writer.Write((byte)step.StepNumber);
+            writer.Write((byte)step.TotalSteps);
+            writer.Write(step.StepName);
+            writer.Write(step.Instruction);
+            writer.Write((byte)step.UiMode);
+            writer.Write((byte)step.Count);
+            writer.Flush();
+        }
+
+        public static CalibrationStepInfo ReadCalibrationStep(BinaryReader reader) {
+            return new CalibrationStepInfo {
+                PadId = reader.ReadByte(),
+                StepNumber = reader.ReadByte(),
+                TotalSteps = reader.ReadByte(),
+                StepName = reader.ReadString(),
+                Instruction = reader.ReadString(),
+                UiMode = (CalibStepUiMode)reader.ReadByte(),
+                Count = reader.ReadByte(),
+            };
         }
     }
 }

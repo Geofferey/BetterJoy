@@ -141,6 +141,7 @@
     <Compile Include="Collections\ConcurrentList.cs" />
     <Compile Include="AppPaths.cs" />
     <Compile Include="BetterJoyService.cs" />
+    <Compile Include="CalibrationDialog.cs" />
     <Compile Include="CalibrationState.cs" />
     <Compile Include="Config.cs" />
     <Compile Include="Controller\OutputControllerDualShock4.cs" />

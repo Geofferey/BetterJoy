@@ -62,6 +62,7 @@ namespace BetterJoyForCemu {
             IMU,
             RUMBLE,
             SHAKE,
+            STICK, // appended, not inserted - existing numeric values are persisted in App.config/settings
         };
         public DebugType debug_type = (DebugType)int.Parse(ConfigurationManager.AppSettings["DebugType"]);
         //public DebugType debug_type = DebugType.NONE; //Keep this for manual debugging during development.
@@ -342,6 +343,28 @@ namespace BetterJoyForCemu {
 
         public void getActiveData() {
             this.activeData = CalibrationState.ActiveCaliData(serial_number);
+        }
+
+        // Applies any empirically-recalibrated stick data on top of whatever dump_calibration_data
+        // already loaded from SPI - called both there (so a controller with prior stick
+        // recalibration gets it immediately on every future connect, not just the session it was
+        // captured in) and right after CalibrationState.FinishStickCalibration (so it takes effect
+        // without needing a reconnect). No-op per stick when ActiveStickCal returns null - i.e.
+        // this controller/stick has never been recalibrated, so the SPI-read values stand.
+        public void getActiveStickData() {
+            ushort[] primary = CalibrationState.ActiveStickCal(serial_number, false);
+            if (primary != null) {
+                Array.Copy(primary, stick_cal, 6);
+                PrintArray(stick_cal, DebugType.STICK, len: 6, start: 0, format: "Applied recalibrated stick data: {0:S}");
+            }
+
+            if (isPro) {
+                ushort[] secondary = CalibrationState.ActiveStickCal(serial_number, true);
+                if (secondary != null) {
+                    Array.Copy(secondary, stick2_cal, 6);
+                    PrintArray(stick2_cal, DebugType.STICK, len: 6, start: 0, format: "Applied recalibrated stick2 data: {0:S}");
+                }
+            }
         }
 
         public void ReceiveRumble(Xbox360FeedbackReceivedEventArgs e) {
@@ -1002,11 +1025,13 @@ namespace BetterJoyForCemu {
 
                 stick_precal[0] = (UInt16)(stick_raw[0] | ((stick_raw[1] & 0xf) << 8));
                 stick_precal[1] = (UInt16)((stick_raw[1] >> 4) | (stick_raw[2] << 4));
+                CalibrationState.AddStickSample(this, false, stick_precal[0], stick_precal[1]);
                 stick = CenterSticks(stick_precal, stick_cal, deadzone, isLeft ? stickScalingFactor : stickScalingFactor2);
 
                 if (isPro) {
                     stick2_precal[0] = (UInt16)(stick2_raw[0] | ((stick2_raw[1] & 0xf) << 8));
                     stick2_precal[1] = (UInt16)((stick2_raw[1] >> 4) | (stick2_raw[2] << 4));
+                    CalibrationState.AddStickSample(this, true, stick2_precal[0], stick2_precal[1]);
                     stick2 = CenterSticks(stick2_precal, stick2_cal, deadzone2, stickScalingFactor2);
                 }
 
@@ -1278,6 +1303,7 @@ namespace BetterJoyForCemu {
                 stick2_cal[0] = temp2[0]; stick2_cal[1] = temp2[1]; stick2_cal[2] = temp2[2];
                 stick2_cal[3] = temp2[3]; stick2_cal[4] = temp2[4]; stick2_cal[5] = temp2[5];
                 deadzone2 = ushort.Parse(ConfigurationManager.AppSettings["deadzone2"]);
+                getActiveStickData();
                 return;
             }
 
@@ -1381,6 +1407,8 @@ namespace BetterJoyForCemu {
                 PrintArray(gyr_neutral, len: 3, d: DebugType.IMU, format: "Factory gyro neutral position: {0:S}");
             }
             HIDapi.hid_set_nonblocking(handle, 1);
+
+            getActiveStickData();
         }
 
         private byte[] ReadSPI(byte addr1, byte addr2, uint len, bool print = false) {

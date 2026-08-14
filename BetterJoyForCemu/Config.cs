@@ -45,7 +45,13 @@ namespace BetterJoyForCemu {
 		// fatal) and destructive when the file looks stale (deletes and recreates on too few
 		// lines). Safe here because nothing else is racing this file at process start. See
 		// ReloadSettingsOnly for the live-reload path, which can't make either assumption.
-		public static void Init(List<KeyValuePair<string, float[]>> caliData) {
+		//
+		// stickCaliData/stick2CaliData are the two lines following caliData - an install
+		// upgrading from before stick recalibration existed simply won't have them, which the
+		// line-count check below already tolerates (only settingsNum, i.e. the basic settings
+		// block, is required); both lists are left empty in that case, which is exactly the
+		// correct "no empirical override yet" state.
+		public static void Init(List<KeyValuePair<string, float[]>> caliData, List<KeyValuePair<string, ushort[]>> stickCaliData, List<KeyValuePair<string, ushort[]>> stick2CaliData) {
 			foreach (string s in DefaultKeys)
 				variables[s] = GetDefaultValue(s);
 
@@ -54,7 +60,7 @@ namespace BetterJoyForCemu {
 				// Reset settings file if old settings
 				if (CountLinesInFile(path) < settingsNum) {
 					File.Delete(path);
-					Init(caliData);
+					Init(caliData, stickCaliData, stick2CaliData);
 					return;
 				}
 
@@ -66,7 +72,7 @@ namespace BetterJoyForCemu {
 						try {
 							if (lineNO < settingsNum) { // load in basic settings
 								variables[vs[0]] = vs[1];
-							} else { // load in calibration presets
+							} else if (lineNO == settingsNum) { // load in gyro/accel calibration presets
 								caliData.Clear();
 								for (int i = 0; i < vs.Length; i++) {
 									string[] caliArr = vs[i].Split(',');
@@ -75,6 +81,20 @@ namespace BetterJoyForCemu {
 										newArr[j - 1] = float.Parse(caliArr[j]);
 									}
 									caliData.Add(new KeyValuePair<string, float[]>(
+										caliArr[0],
+										newArr
+									));
+								}
+							} else { // load in stick calibration presets (primary stick, then secondary)
+								var target = lineNO == settingsNum + 1 ? stickCaliData : stick2CaliData;
+								target.Clear();
+								for (int i = 0; i < vs.Length; i++) {
+									string[] caliArr = vs[i].Split(',');
+									ushort[] newArr = new ushort[6];
+									for (int j = 1; j < caliArr.Length; j++) {
+										newArr[j - 1] = ushort.Parse(caliArr[j]);
+									}
+									target.Add(new KeyValuePair<string, ushort[]>(
 										caliArr[0],
 										newArr
 									));
@@ -95,6 +115,8 @@ namespace BetterJoyForCemu {
 						caliStr += space + caliData[i].Key + "," + String.Join(",", caliData[i].Value);
 					}
 					file.WriteLine(caliStr);
+					file.WriteLine(""); // stick calibration (primary) - empty until first recalibration
+					file.WriteLine(""); // stick calibration (secondary, Pro controllers only)
 				}
 			}
 		}
@@ -172,6 +194,36 @@ namespace BetterJoyForCemu {
 			}
             txt[settingsNum] = caliStr;
             File.WriteAllLines(path, txt);
+		}
+
+		// Two lines after the gyro/accel one: primary stick, then secondary (Pro controllers
+		// only). Resizes to fit both regardless of whether SaveCaliData has ever run in this
+		// process/file before - the two calls make no assumption about each other's ordering.
+		public static void SaveStickCaliData(List<KeyValuePair<string, ushort[]>> stickCaliData, List<KeyValuePair<string, ushort[]>> stick2CaliData) {
+			string[] txt = File.ReadAllLines(path);
+			int neededLines = settingsNum + 3;
+			if (txt.Length < neededLines) {
+				int oldLength = txt.Length;
+				Array.Resize(ref txt, neededLines);
+				for (int i = oldLength; i < neededLines; i++)
+					txt[i] = "";
+			}
+
+			string stickStr = "";
+			for (int i = 0; i < stickCaliData.Count; i++) {
+				string space = i == 0 ? "" : " ";
+				stickStr += space + stickCaliData[i].Key + "," + String.Join(",", stickCaliData[i].Value);
+			}
+			txt[settingsNum + 1] = stickStr;
+
+			string stick2Str = "";
+			for (int i = 0; i < stick2CaliData.Count; i++) {
+				string space = i == 0 ? "" : " ";
+				stick2Str += space + stick2CaliData[i].Key + "," + String.Join(",", stick2CaliData[i].Value);
+			}
+			txt[settingsNum + 2] = stick2Str;
+
+			File.WriteAllLines(path, txt);
 		}
 
 		public static void Save() {

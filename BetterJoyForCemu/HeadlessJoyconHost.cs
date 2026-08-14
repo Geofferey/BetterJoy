@@ -307,6 +307,10 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.StartCalibration:
                             StartCalibration(reader.ReadByte());
                             break;
+                        case ControlMessageType.CalibrationReady:
+                            reader.ReadByte(); // padId - only one calibration can be in progress at a time, guarded by calibrationInProgress
+                            pendingCalibReady?.TrySetResult(true);
+                            break;
                     }
                 }
             } catch {
@@ -331,9 +335,8 @@ namespace BetterJoyForCemu {
                 JoinOrSplitJoycon(jc);
         }
 
-        // Mirrors MainForm's StartGetData/CalcData timing (calibration samples are gathered
-        // into the shared CalibrationState buffers for a fixed ~3s window) - the "keep it flat"
-        // pre-countdown is purely a GUI-local visual affordance, so it isn't reproduced here.
+        // Mirrors MainForm's calibration step sequence exactly - a connected GUI renders the
+        // same CalibrationDialog off of the CalibrationStep messages pushed below.
         // CalibrationState.CalibratingController scopes sample admission to this one padId, so
         // other connected controllers staying connected/polling can't contaminate the buffers -
         // no need to require exactly one controller connected total.
@@ -345,7 +348,14 @@ namespace BetterJoyForCemu {
         // superseded (see AcceptNextControlConnection) and a new one calls in around the same time.
         private int calibrationInProgress = 0;
 
-        private void StartCalibration(int padId) {
+        // Completed by an incoming CalibrationReady message (see ControlReadLoop) whenever the
+        // GUI's Start or Done button is clicked - both use the same message/wait, since only one
+        // can ever be pending at a time and the flow below knows from context which it means.
+        // Gyro is the one phase that doesn't wait on this a second time (no Done click - see
+        // CalibrationDialog for why): it runs on its own fixed Task.Delay instead once started.
+        private TaskCompletionSource<bool> pendingCalibReady;
+
+        private async void StartCalibration(int padId) {
             // Captured once, before the guard - re-querying for it a second time after admission
             // (the controller this validated a moment earlier could disconnect in between) could
             // throw with the guard already set and no continuation left to ever release it.
@@ -366,27 +376,104 @@ namespace BetterJoyForCemu {
 
             SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
 
-            CalibrationState.ClearSamples();
-            CalibrationState.CalibratingController = jc;
-            CalibrationState.Calibrating = true;
+            // A plain Joycon offers one stick step, always "primary" data-wise regardless of
+            // which physical side it is (see Joycon.ProcessButtonsAndStick - only a Pro
+            // controller ever feeds secondary samples); a Pro controller offers both.
+            var stickSteps = new List<bool>();
+            if (jc.isPro) {
+                stickSteps.Add(false);
+                stickSteps.Add(true);
+            } else {
+                stickSteps.Add(false);
+            }
+            int totalSteps = 1 + stickSteps.Count;
 
-            Task.Delay(3000).ContinueWith(_ => {
-                // The guard and CalibrationState.Calibrating MUST clear even if the controller
-                // disconnected mid-window, no samples came in, or the save failed - otherwise
-                // calibrationInProgress stays stuck at 1 forever and every future calibration
-                // request fails until the service restarts.
-                try {
-                    CalibrationState.FinishCalibration(jc.serial_number);
-                    jc.getActiveData();
-                    SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));
-                } catch {
-                    SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
-                } finally {
-                    CalibrationState.Calibrating = false;
-                    CalibrationState.CalibratingController = null;
-                    Interlocked.Exchange(ref calibrationInProgress, 0);
+            try {
+                SendCalibrationStep(padId, 1, totalSteps, "Gyroscope", "Place the controller on a flat, still surface.", CalibStepUiMode.Start, 0);
+                await WaitForCalibReady();
+
+                CalibrationState.ClearSamples();
+                CalibrationState.CalibratingController = jc;
+                CalibrationState.Calibrating = true;
+                for (int t = 3; t >= 0; t--) {
+                    SendCalibrationStep(padId, 1, totalSteps, "Gyroscope", "Hold still...", CalibStepUiMode.Countdown, t);
+                    if (t > 0)
+                        await Task.Delay(1000);
                 }
-            });
+
+                CalibrationState.FinishCalibration(jc.serial_number);
+                jc.getActiveData();
+
+                for (int i = 0; i < stickSteps.Count; i++) {
+                    bool secondary = stickSteps[i];
+                    string stepName = jc.isPro
+                        ? (secondary ? "Right Stick" : "Left Stick")
+                        : (jc.isLeft ? "Left Stick" : "Right Stick");
+                    int stepNumber = i + 2; // step 1 is always Gyro
+
+                    CalibrationState.ClearStickSamples();
+                    CalibrationState.StickCalibratingController = jc;
+                    CalibrationState.StickCalibrating = true;
+                    CalibrationState.CurrentStickTarget = secondary ? CalibrationState.StickTarget.Secondary : CalibrationState.StickTarget.Primary;
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+                    // Center gets a Start gate (the user needs a moment to actually let go of/
+                    // center the stick before admission begins), then just a brief automatic
+                    // capture - centering is a quick snapshot, not something that benefits from
+                    // open-ended time. Rotate below skips the Start gate too: a few stray samples
+                    // before the user starts moving are harmless, they just fall inside the
+                    // eventual min/max instead of corrupting it.
+                    SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Leave the {0} centered - don't touch it.", stepName.ToLower()), CalibStepUiMode.Start, 0);
+                    await WaitForCalibReady();
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Center;
+                    await Task.Delay(1000);
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
+                    SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Now rotate the {0} in full circles out to its edges.", stepName.ToLower()), CalibStepUiMode.Done, 0);
+                    await WaitForCalibReady();
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+                    CalibrationState.FinishStickCalibration(jc.serial_number, secondary);
+                    jc.getActiveStickData();
+                }
+
+                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));
+            } catch {
+                // Any step can fail (e.g. the controller disconnected mid-window) -
+                // calibrationInProgress and the CalibrationState flags MUST still clear here or
+                // every future calibration request fails until the service restarts.
+                CalibrationState.Calibrating = false;
+                CalibrationState.CalibratingController = null;
+                CalibrationState.StickCalibrating = false;
+                CalibrationState.StickCalibratingController = null;
+                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
+            } finally {
+                pendingCalibReady = null;
+                Interlocked.Exchange(ref calibrationInProgress, 0);
+            }
+        }
+
+        private Task WaitForCalibReady() {
+            // RunContinuationsAsynchronously - TrySetResult below fires from the pipe's read
+            // loop thread (ControlReadLoop); without this the rest of StartCalibration's async
+            // continuation would run inline on that thread instead of the thread pool, delaying
+            // it from getting back to reading the next incoming message.
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            pendingCalibReady = tcs;
+            return tcs.Task;
+        }
+
+        private void SendCalibrationStep(int padId, int stepNumber, int totalSteps, string stepName, string instruction, CalibStepUiMode uiMode, int count) {
+            SendControlMessage(w => ServiceControlIpc.WriteCalibrationStep(w, new CalibrationStepInfo {
+                PadId = padId,
+                StepNumber = stepNumber,
+                TotalSteps = totalSteps,
+                StepName = stepName,
+                Instruction = instruction,
+                UiMode = uiMode,
+                Count = count,
+            }));
         }
 
         private void BroadcastSnapshot() {

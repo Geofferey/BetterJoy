@@ -15,6 +15,7 @@ namespace BetterJoyForCemu {
         public event Action<int> CalibrationStarted;
         public event Action<int> CalibrationComplete;
         public event Action<int> CalibrationFailed;
+        public event Action<CalibrationStepInfo> CalibrationStep;
         public event Action Disconnected;
 
         private NamedPipeClientStream pipe;
@@ -60,6 +61,9 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.CalibrationFailed:
                             CalibrationFailed?.Invoke(reader.ReadByte());
                             break;
+                        case ControlMessageType.CalibrationStep:
+                            CalibrationStep?.Invoke(ServiceControlIpc.ReadCalibrationStep(reader));
+                            break;
                     }
                 }
             } catch {
@@ -74,6 +78,7 @@ namespace BetterJoyForCemu {
         public void TestRumble(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.TestRumble, padId));
         public void JoinOrSplit(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.JoinOrSplit, padId));
         public void StartCalibration(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.StartCalibration, padId));
+        public void CalibrationReady(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationReady, padId));
 
         private void Send(Action<BinaryWriter> write) {
             lock (writeLock) {

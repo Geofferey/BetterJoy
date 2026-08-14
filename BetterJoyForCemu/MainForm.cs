@@ -148,7 +148,7 @@ namespace BetterJoyForCemu {
                 // completely empty and every Config.Value(...) lookup returns "". Map Buttons
                 // (Reassign.GetPrettyName) doesn't guard against that, so it crashed with
                 // ArgumentOutOfRangeException the moment anyone opened it in remote mode.
-                Config.Init(CalibrationState.CaliData);
+                Config.Init(CalibrationState.CaliData, CalibrationState.StickCaliData, CalibrationState.Stick2CaliData);
 
                 // Add Controllers/blacklist (_3rdPartyControllers dialog) reads/edits these two
                 // in-memory lists - normally populated by Program.Start()'s GUI branch, which
@@ -332,22 +332,86 @@ namespace BetterJoyForCemu {
             serviceClient.SnapshotReceived += RenderSnapshot;
 
             serviceClient.CalibrationStarted += padId => this.Invoke(new MethodInvoker(delegate {
-                console.Text = "Calibrating via service - hold the controller flat...";
+                console.Text = "Calibration started." + "\r\n";
+                if (calibDialog == null) {
+                    calibDialog = new CalibrationDialog();
+                    calibDialog.ButtonClicked += OnRemoteCalibButtonClicked;
+                    calibDialog.Show(this);
+                }
+            }));
+
+            // Step name/instruction/UI mode all come from the service (HeadlessJoyconHost's
+            // StartCalibration) - calibDialog here is a passive renderer, same as it is for the
+            // local flow, just fed over the pipe instead of driven by a local state machine. The
+            // service sends one message per second for the gyro countdown, so there's no need
+            // for a local cosmetic timer the way an earlier version of this had - the displayed
+            // number is always exactly what the service just said.
+            serviceClient.CalibrationStep += step => this.Invoke(new MethodInvoker(delegate {
+                if (calibDialog == null) {
+                    calibDialog = new CalibrationDialog();
+                    calibDialog.ButtonClicked += OnRemoteCalibButtonClicked;
+                    calibDialog.Show(this);
+                }
+                calibDialog.SetStep(step.StepNumber, step.TotalSteps, step.StepName);
+                calibDialog.SetInstruction(step.Instruction);
+                remoteCalibPadId = step.PadId;
+
+                switch (step.UiMode) {
+                    case CalibStepUiMode.Start:
+                        calibDialog.ShowStartPrompt();
+                        break;
+                    case CalibStepUiMode.Done:
+                        calibDialog.ShowDonePrompt();
+                        break;
+                    case CalibStepUiMode.Countdown:
+                        calibDialog.ShowCountdown(step.Count);
+                        break;
+                }
             }));
 
             serviceClient.CalibrationComplete += padId => this.Invoke(new MethodInvoker(delegate {
                 console.Text += "\r\nCalibration completed!!!\r\n";
                 RestoreCalibrateIcon();
+                CloseRemoteCalibDialog("Calibration complete!");
             }));
 
             serviceClient.CalibrationFailed += padId => this.Invoke(new MethodInvoker(delegate {
-                console.Text += "\r\nCalibration failed - only one controller may be connected while calibrating.\r\n";
+                console.Text += "\r\nCalibration failed - was the controller disconnected?\r\n";
                 RestoreCalibrateIcon();
+                CloseRemoteCalibDialog("Failed - was the controller disconnected?");
             }));
 
             serviceClient.Disconnected += () => this.Invoke(new MethodInvoker(delegate {
                 AppendTextBox("Lost connection to the BetterJoy service.\r\n");
+                CloseRemoteCalibDialog("Lost connection to the service.");
             }));
+        }
+
+        private int remoteCalibPadId;
+
+        // The dialog's one button always just reports "clicked" back to the service as
+        // CalibrationReady, whether that means Start or Done - the service knows which one it
+        // asked for (it's the only thing that can be pending), same as it's the sole source of
+        // truth for what the button currently means (see the CalibrationStep handler above).
+        private void OnRemoteCalibButtonClicked() {
+            calibDialog.HidePrompt();
+            serviceClient.CalibrationReady(remoteCalibPadId);
+        }
+
+        private void CloseRemoteCalibDialog(string message) {
+            CalibrationDialog dialogToClose = calibDialog;
+            calibDialog = null;
+            if (dialogToClose == null)
+                return;
+
+            dialogToClose.ShowResult(message);
+            Timer closeTimer = new Timer { Interval = 1500 };
+            closeTimer.Tick += (s, e) => {
+                closeTimer.Stop();
+                closeTimer.Dispose();
+                dialogToClose.Close();
+            };
+            closeTimer.Start();
         }
 
         // Full re-render from a snapshot rather than incremental diffing against previous state
@@ -941,6 +1005,22 @@ namespace BetterJoyForCemu {
                 Trace.WriteLine(String.Format("rw {0}, column {1}, {2}, {3}", coord.Row, coord.Column, sender.GetType(), KeyCtl));
             }
         }
+        // The ordered set of steps a calibration run walks through, shown one at a time in
+        // calibDialog - built per-run in StartCalibrate from the specific controller involved,
+        // since a plain Joycon only ever has one physical stick to offer a step for, while a
+        // Pro controller offers both.
+        private enum CalibStepKind { Gyro, LeftStick, RightStick }
+        private List<CalibStepKind> calibSteps;
+        private int calibStepIndex;
+
+        // Gyro is a fixed countdown (see CalibrationDialog) - the other two are open-ended,
+        // waiting for an explicit Start then an explicit Done click with no time limit.
+        private enum CalibPhase { GyroCollect, StickCenter, StickRange }
+        private CalibPhase calibPhase;
+        private bool awaitingStart;
+
+        private CalibrationDialog calibDialog;
+
         private void StartCalibrate(object sender, EventArgs e) {
             if (calibrationInProgress) {
                 RestoreCalibrateIcon();
@@ -961,23 +1041,66 @@ namespace BetterJoyForCemu {
             }
 
             calibrationInProgress = true;
-            countDown = new Timer();
-            this.count = 4;
-            this.CountDown(null, null);
-            countDown.Tick += new EventHandler(CountDown);
-            countDown.Interval = 1000;
-            countDown.Enabled = true;
+
+            calibSteps = new List<CalibStepKind> { CalibStepKind.Gyro };
+            if (calibratingJoycon.isPro) {
+                calibSteps.Add(CalibStepKind.LeftStick);
+                calibSteps.Add(CalibStepKind.RightStick);
+            } else if (calibratingJoycon.isLeft) {
+                calibSteps.Add(CalibStepKind.LeftStick);
+            } else {
+                calibSteps.Add(CalibStepKind.RightStick);
+            }
+            calibStepIndex = 0;
+
+            calibDialog = new CalibrationDialog();
+            calibDialog.ButtonClicked += OnCalibButtonClicked;
+            calibDialog.Show(this);
+
+            this.console.Text = "Calibration started." + "\r\n";
+            BeginCurrentStep();
         }
 
-        private void StartGetData() {
-            CalibrationState.ClearSamples();
-            countDown = new Timer();
-            this.count = 3;
-            CalibrationState.CalibratingController = calibratingJoycon;
-            CalibrationState.Calibrating = true;
-            countDown.Tick += new EventHandler(CalcData);
-            countDown.Interval = 1000;
-            countDown.Enabled = true;
+        private static string StepDisplayName(CalibStepKind step) {
+            switch (step) {
+                case CalibStepKind.Gyro: return "Gyroscope";
+                case CalibStepKind.LeftStick: return "Left Stick";
+                case CalibStepKind.RightStick: return "Right Stick";
+            }
+            return "";
+        }
+
+        // Shows the step's first phase instruction with a Start prompt - nothing begins until
+        // the user clicks it (OnCalibButtonClicked), so they have as long as they need to
+        // actually read the instruction and get into position.
+        private void BeginCurrentStep() {
+            CalibStepKind step = calibSteps[calibStepIndex];
+            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step));
+
+            if (step == CalibStepKind.Gyro) {
+                BeginPhase(CalibPhase.GyroCollect, "Place the controller on a flat, still surface.");
+            } else {
+                CalibrationState.ClearStickSamples();
+                CalibrationState.StickCalibratingController = calibratingJoycon;
+                CalibrationState.StickCalibrating = true;
+                // Only a Pro controller ever has a genuine secondary stick - a solo Joycon's
+                // one physical stick is always "primary" data-wise regardless of which side
+                // this step is labeled for (see Joycon.ProcessButtonsAndStick, which only ever
+                // feeds secondary samples when isPro).
+                CalibrationState.CurrentStickTarget = (step == CalibStepKind.RightStick && calibratingJoycon.isPro)
+                    ? CalibrationState.StickTarget.Secondary
+                    : CalibrationState.StickTarget.Primary;
+                CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step).ToLower()));
+            }
+        }
+
+        private void BeginPhase(CalibPhase phase, string instruction) {
+            calibPhase = phase;
+            awaitingStart = true;
+            calibDialog.SetInstruction(instruction);
+            calibDialog.ShowStartPrompt();
         }
 
         private void btn_reassign_open_Click(object sender, EventArgs e) {
@@ -985,40 +1108,152 @@ namespace BetterJoyForCemu {
             mapForm.ShowDialog();
         }
 
-        private void CountDown(object sender, EventArgs e) {
-            if (this.count == 0) {
-                this.console.Text = "Calibrating...";
-                countDown.Stop();
-                this.StartGetData();
+        // The dialog has one button whose meaning depends on where we are: first click in a
+        // phase starts it (begins sample admission, and for gyro also starts its countdown);
+        // for the two stick phases, a second click (Done) is what actually ends it - there's no
+        // timer for those at all, the user decides when they're finished.
+        private void OnCalibButtonClicked() {
+            if (awaitingStart) {
+                awaitingStart = false;
+                StartPhase();
             } else {
-                this.console.Text = "Plese keep the controller flat." + "\r\n";
-                this.console.Text += "Calibration will start in " + this.count + " seconds.";
-                this.count--;
+                FinishStickPhase();
             }
         }
-        private void CalcData(object sender, EventArgs e) {
-            if (this.count == 0) {
-                countDown.Stop();
-                // calibratingJoycon captured once in StartCalibrate - a disconnect during the
-                // ~7 second countdown+collection window (the controller could legitimately be
-                // dropped mid-calibration) must not leave calibrationInProgress/the icon stuck,
-                // so this is a hard requirement, not just tidiness.
-                try {
-                    CalibrationState.FinishCalibration(calibratingJoycon.serial_number);
-                    this.console.Text += "Calibration completed!!!" + "\r\n";
-                    calibratingJoycon.getActiveData();
-                } catch {
-                    this.console.Text += "Calibration failed - was the controller disconnected?" + "\r\n";
-                } finally {
-                    CalibrationState.Calibrating = false;
-                    calibrationInProgress = false;
-                    calibratingJoycon = null;
-                    RestoreCalibrateIcon();
-                }
-            } else {
+
+        private void StartPhase() {
+            switch (calibPhase) {
+                case CalibPhase.GyroCollect:
+                    CalibrationState.ClearSamples();
+                    CalibrationState.CalibratingController = calibratingJoycon;
+                    CalibrationState.Calibrating = true;
+                    calibDialog.SetInstruction("Hold still...");
+                    this.count = 3;
+                    calibDialog.ShowCountdown(this.count);
+                    countDown = new Timer();
+                    countDown.Interval = 1000;
+                    countDown.Tick += new EventHandler(GyroCollectTick);
+                    countDown.Enabled = true;
+                    break;
+
+                case CalibPhase.StickCenter:
+                    // No Done click here - centering is just a quick snapshot of rest position,
+                    // not something that benefits from open-ended time the way rotating around
+                    // the full range does. A brief automatic capture is enough, then straight
+                    // into the (unlimited, Done-gated) rotate phase.
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Center;
+                    calibDialog.HidePrompt();
+                    countDown = new Timer();
+                    countDown.Interval = 1000;
+                    countDown.Tick += new EventHandler(StickCenterCaptureTick);
+                    countDown.Enabled = true;
+                    break;
+
+                case CalibPhase.StickRange:
+                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
+                    calibDialog.ShowDonePrompt();
+                    break;
+            }
+        }
+
+        // Gyro alone stays on a fixed countdown - the point of this measurement is proving the
+        // controller sits genuinely untouched, so it can't reasonably end on a click the way the
+        // stick phases do.
+        private void GyroCollectTick(object sender, EventArgs e) {
+            if (this.count > 0) {
                 this.count--;
+                calibDialog.ShowCountdown(this.count);
+                return;
             }
 
+            countDown.Stop();
+
+            // calibratingJoycon captured once in StartCalibrate - a disconnect during the
+            // collection window (the controller could legitimately be dropped mid-calibration)
+            // must not leave calibrationInProgress/the icon/the dialog stuck, so this is a hard
+            // requirement, not just tidiness.
+            try {
+                CalibrationState.FinishCalibration(calibratingJoycon.serial_number);
+                calibratingJoycon.getActiveData();
+                this.console.Text += "Gyro calibration completed!!!" + "\r\n";
+                AdvanceStep();
+            } catch {
+                this.console.Text += "Calibration failed - was the controller disconnected?" + "\r\n";
+                calibDialog.ShowResult("Failed - was the controller disconnected?");
+                FinishCalibrationFlow();
+            }
+        }
+
+        // One-shot: centering doesn't need a Done click, just a brief automatic capture, then
+        // straight into the rotate phase (unlimited, Done-gated - no Start needed there either,
+        // see the comment at its ShowDonePrompt call site).
+        private void StickCenterCaptureTick(object sender, EventArgs e) {
+            countDown.Stop();
+            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+            calibPhase = CalibPhase.StickRange;
+            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex]).ToLower()));
+            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
+            calibDialog.ShowDonePrompt();
+        }
+
+        // Center auto-advances on its own short timer (StickCenterCaptureTick), so this is only
+        // ever reached via a Done click on the rotate phase.
+        private void FinishStickPhase() {
+            calibDialog.HidePrompt();
+            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
+
+            bool secondary = CalibrationState.CurrentStickTarget == CalibrationState.StickTarget.Secondary;
+            try {
+                CalibrationState.FinishStickCalibration(calibratingJoycon.serial_number, secondary);
+                calibratingJoycon.getActiveStickData();
+                this.console.Text += StepDisplayName(calibSteps[calibStepIndex]) + " calibration completed!!!" + "\r\n";
+                AdvanceStep();
+            } catch {
+                this.console.Text += "Stick calibration failed - was the controller disconnected?" + "\r\n";
+                calibDialog.ShowResult("Failed - was the controller disconnected?");
+                FinishCalibrationFlow();
+            }
+        }
+
+        private void AdvanceStep() {
+            calibStepIndex++;
+            if (calibStepIndex >= calibSteps.Count) {
+                calibDialog.ShowResult("Calibration complete!");
+                this.console.Text += "Calibration completed!!!" + "\r\n";
+                FinishCalibrationFlow();
+            } else {
+                BeginCurrentStep();
+            }
+        }
+
+        // Shared end-of-flow cleanup, reached after the last step finishes (success or failure)
+        // or as soon as any single step's own try/catch fails. Resets the stick flags here too,
+        // not just inside FinishStickCalibration - a gyro-step failure never calls that method
+        // at all, but a stick step earlier in the same run may have already turned
+        // StickCalibrating/StickCalibratingController on. The dialog is closed on a short delay
+        // (captured locally, not via the calibDialog field, in case a new run starts before the
+        // delay elapses) so a completion/failure message is actually readable before it vanishes.
+        private void FinishCalibrationFlow() {
+            CalibrationState.Calibrating = false;
+            CalibrationState.CalibratingController = null;
+            CalibrationState.StickCalibrating = false;
+            CalibrationState.StickCalibratingController = null;
+            calibrationInProgress = false;
+            calibratingJoycon = null;
+            RestoreCalibrateIcon();
+
+            CalibrationDialog dialogToClose = calibDialog;
+            calibDialog = null;
+            if (dialogToClose != null) {
+                Timer closeTimer = new Timer { Interval = 1500 };
+                closeTimer.Tick += (s, e) => {
+                    closeTimer.Stop();
+                    closeTimer.Dispose();
+                    dialogToClose.Close();
+                };
+                closeTimer.Start();
+            }
         }
     }
 }

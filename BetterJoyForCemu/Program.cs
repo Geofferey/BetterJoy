@@ -655,7 +655,7 @@ namespace BetterJoyForCemu {
             // constructs a MainForm) silently never loaded remap keybinds (capture/home/sl_*/
             // sr_*/shake/reset_mouse/active_gyro) at all - every Config.Value(...) lookup for
             // them returned "" under service mode. Moved here so both modes get it.
-            Config.Init(CalibrationState.CaliData);
+            Config.Init(CalibrationState.CaliData, CalibrationState.StickCaliData, CalibrationState.Stick2CaliData);
 
             if (useHidHide) {
                 try {
