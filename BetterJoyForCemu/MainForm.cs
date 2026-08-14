@@ -230,6 +230,28 @@ namespace BetterJoyForCemu {
             System.Diagnostics.Process.Start("http://paypal.me/DavidKhachaturov/5");
         }
 
+        // AssignSlot/CollapseJoinedPair/HandleJoyconDropped are called from the scan thread
+        // while it holds JoyconManager's scanLock (see Program.cs) - a synchronous this.Invoke
+        // here would block the scan thread until the UI thread services it, but the UI thread's
+        // own shutdown path (ExitApplication -> Program.Stop -> StopScanning) blocks trying to
+        // ACQUIRE that same scanLock. If both happen at once, neither side can proceed: the UI
+        // thread can't pump messages to service the Invoke while it's stuck in a plain lock
+        // statement, and the scan thread can't release scanLock until Invoke returns - a
+        // deadlock that meant closing the GUI could hang indefinitely instead of exiting.
+        // BeginInvoke doesn't block the caller, breaking that cycle; the null/IsDisposed guards
+        // handle the queued callback finally running after the form has already closed.
+        private void SafeBeginInvoke(Action action) {
+            if (IsDisposed)
+                return;
+            try {
+                BeginInvoke(action);
+            } catch (ObjectDisposedException) {
+                // form closed between the check above and this call - nothing to update
+            } catch (InvalidOperationException) {
+                // handle not created / thread has no message loop - also fine to skip
+            }
+        }
+
         public void AppendTextBox(string value) { // https://stackoverflow.com/questions/519233/writing-to-a-textbox-from-another-thread
             if (InvokeRequired) {
                 this.Invoke(new Action<string>(AppendTextBox), new object[] { value });
@@ -618,7 +640,7 @@ namespace BetterJoyForCemu {
         // since the pair now acts as a single virtual controller and doesn't need two slots to
         // show that.
         public void CollapseJoinedPair(Joycon left, Joycon right) {
-            this.Invoke(new MethodInvoker(delegate {
+            SafeBeginInvoke(() => {
                 Button primaryButton = con.Find(b => b.Tag == left);
                 Button secondaryButton = con.Find(b => b.Tag == right);
                 if (primaryButton == null || secondaryButton == null)
@@ -631,7 +653,7 @@ namespace BetterJoyForCemu {
                 secondaryButton.Tag = null;
                 secondaryButton.BackgroundImage = Properties.Resources.cross;
                 SetEmptySlotTooltip(secondaryButton);
-            }));
+            });
         }
 
         // IJoyconHost entry point for a brand new connection (Program.cs's
@@ -645,9 +667,9 @@ namespace BetterJoyForCemu {
             else if (joycon.is64) icon = Properties.Resources.ultra;
             else icon = joycon.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
 
-            this.Invoke(new MethodInvoker(delegate {
+            SafeBeginInvoke(() => {
                 AssignJoyconToSlot(joycon, icon);
-            }));
+            });
         }
 
         // Finds an empty slot for a Joycon that doesn't currently have its own button - used
@@ -678,7 +700,7 @@ namespace BetterJoyForCemu {
         // Called after Program.cs's CleanUp() detaches a dropped Joycon, to fix up whatever
         // slot(s) it and/or its (former) pair partner were occupying.
         public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) {
-            this.Invoke(new MethodInvoker(delegate {
+            SafeBeginInvoke(() => {
                 Button droppedButton = con.Find(b => b.Tag == dropped);
 
                 if (droppedButton != null) {
@@ -706,7 +728,7 @@ namespace BetterJoyForCemu {
                         SetConnectionTooltip(survivorButton, false);
                     }
                 }
-            }));
+            });
         }
 
         // Matches the low-battery balloon tip previously inlined in Joycon.BatteryChanged() -

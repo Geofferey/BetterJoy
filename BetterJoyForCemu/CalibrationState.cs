@@ -14,9 +14,30 @@ namespace BetterJoyForCemu {
             new KeyValuePair<string, float[]>("0", new float[6] { 0, 0, 0, -710, 0, 0 })
         };
 
+        // Guards the sample lists between a Joycon's own packet-processing thread (AddSample,
+        // called for every packet while a calibration window is open) and FinishCalibration -
+        // without this, FinishCalibration reading/enumerating a list while AddSample is
+        // concurrently appending to it could throw or compute from a half-collected set.
+        private static readonly object samplesLock = new object();
+
         public static void ClearSamples() {
-            XG.Clear(); YG.Clear(); ZG.Clear();
-            XA.Clear(); YA.Clear(); ZA.Clear();
+            lock (samplesLock) {
+                XG.Clear(); YG.Clear(); ZG.Clear();
+                XA.Clear(); YA.Clear(); ZA.Clear();
+            }
+        }
+
+        // Called from a Joycon's own read thread once per axis per packet while Calibrating is
+        // true - both the check and the appends happen under the same lock FinishCalibration
+        // uses to stop admission and snapshot the lists, so a sample can never land in the
+        // narrow window between "stop admitting" and "read for calculation."
+        public static void AddSample(List<int> accList, List<int> gyroList, int accValue, int gyroValue) {
+            lock (samplesLock) {
+                if (!Calibrating)
+                    return;
+                accList.Add(accValue);
+                gyroList.Add(gyroValue);
+            }
         }
 
         public static float[] ActiveCaliData(string serialNumber) {
@@ -35,23 +56,37 @@ namespace BetterJoyForCemu {
 
         // Computes each axis's median from the just-collected samples and stores it as the
         // active controller's calibration offsets, replacing any prior entry for the same
-        // serial number.
+        // serial number. Stops admission and snapshots every list atomically (under the same
+        // lock AddSample uses) before calculating, and only publishes to CaliData once all six
+        // medians succeed - a failure partway through (e.g. an empty list) previously could
+        // leave a half-computed entry in CaliData, since the target array was mutated in place
+        // as each axis finished rather than published all at once at the end.
         public static void FinishCalibration(string serialNumber) {
-            int serIndex = FindSerialIndex(serialNumber);
-            float[] arr = new float[6] { 0, 0, 0, 0, 0, 0 };
-            if (serIndex == -1) {
-                CaliData.Add(new KeyValuePair<string, float[]>(serialNumber, arr));
-            } else {
-                arr = CaliData[serIndex].Value;
+            List<int> xg, yg, zg, xa, ya, za;
+            lock (samplesLock) {
+                Calibrating = false;
+                xg = new List<int>(XG);
+                yg = new List<int>(YG);
+                zg = new List<int>(ZG);
+                xa = new List<int>(XA);
+                ya = new List<int>(YA);
+                za = new List<int>(ZA);
             }
 
             Random rnd = new Random();
-            arr[0] = (float)QuickselectMedian(XG, rnd.Next);
-            arr[1] = (float)QuickselectMedian(YG, rnd.Next);
-            arr[2] = (float)QuickselectMedian(ZG, rnd.Next);
-            arr[3] = (float)QuickselectMedian(XA, rnd.Next);
-            arr[4] = (float)QuickselectMedian(YA, rnd.Next);
-            arr[5] = (float)QuickselectMedian(ZA, rnd.Next) - 4010; // Joycon.cs acc_sen 16384
+            float[] arr = new float[6];
+            arr[0] = (float)QuickselectMedian(xg, rnd.Next);
+            arr[1] = (float)QuickselectMedian(yg, rnd.Next);
+            arr[2] = (float)QuickselectMedian(zg, rnd.Next);
+            arr[3] = (float)QuickselectMedian(xa, rnd.Next);
+            arr[4] = (float)QuickselectMedian(ya, rnd.Next);
+            arr[5] = (float)QuickselectMedian(za, rnd.Next) - 4010; // Joycon.cs acc_sen 16384
+
+            int serIndex = FindSerialIndex(serialNumber);
+            if (serIndex == -1)
+                CaliData.Add(new KeyValuePair<string, float[]>(serialNumber, arr));
+            else
+                CaliData[serIndex] = new KeyValuePair<string, float[]>(serialNumber, arr);
 
             Config.SaveCaliData(CaliData);
         }

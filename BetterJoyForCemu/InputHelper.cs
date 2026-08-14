@@ -42,6 +42,15 @@ namespace BetterJoyForCemu {
             // down (session change, service stop, etc.) - see HeadlessJoyconHost.StartNewHelperSession.
             var context = new ApplicationContext();
 
+            // Must be created on this thread, before Application.Run starts pumping - it's what
+            // lets the read-loop task below (a different thread) safely call back onto this one.
+            // context.ExitThread() called directly from that background thread doesn't reliably
+            // stop the message loop: the PostQuitMessage it triggers targets whichever thread
+            // calls it, not necessarily the one actually running Application.Run, so the process
+            // (and its global keyboard/mouse hooks) could stay alive indefinitely after the pipe
+            // dropped - accumulating an orphaned helper on every session change.
+            var syncContext = new WindowsFormsSynchronizationContext();
+
             Task.Run(() => {
                 try {
                     while (pipe.IsConnected) {
@@ -51,7 +60,7 @@ namespace BetterJoyForCemu {
                 } catch {
                     // pipe closed/service gone - fall through and stop the message pump below
                 } finally {
-                    context.ExitThread();
+                    syncContext.Post(_ => context.ExitThread(), null);
                 }
             });
 
