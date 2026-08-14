@@ -94,12 +94,26 @@ begin
   if WizardIsTaskSelected('service') then begin
     Params := 'create BetterJoy binPath= "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" -service" start= auto DisplayName= "BetterJoy"';
     Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'description BetterJoy "Nintendo Switch controller service"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
+// Best-effort, before files are copied: an existing installed service still running keeps
+// BetterJoyForCemu.exe/its DLLs locked, which fails the file-copy step outright rather than a
+// clean upgrade. Silently does nothing if the service was never installed or wasn't running.
+procedure StopExistingService;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then begin
+    StopExistingService;
+  end;
   if CurStep = ssPostInstall then begin
     InstallHidHide;
     InstallService;
