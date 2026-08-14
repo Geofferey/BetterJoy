@@ -8,6 +8,16 @@ namespace BetterJoyForCemu {
     // matters for running headless (see BetterJoyService), where there's no MainForm at all.
     public static class CalibrationState {
         public static bool Calibrating = false;
+
+        // Which specific controller Calibrating applies to - the sample lists below are shared/
+        // global, so without this, calibrating one controller while others stay connected would
+        // let every other connected controller's Poll() thread ALSO dump samples into the same
+        // buffers (each one calls AddSample on every packet whenever Calibrating is true),
+        // corrupting the result with a mix of unrelated controllers' readings. This is what the
+        // old "exactly one controller connected" UI restriction was actually working around -
+        // scoping admission to one specific controller makes that restriction unnecessary.
+        public static Joycon CalibratingController = null;
+
         public static List<int> XG = new List<int>(), YG = new List<int>(), ZG = new List<int>();
         public static List<int> XA = new List<int>(), YA = new List<int>(), ZA = new List<int>();
         public static List<KeyValuePair<string, float[]>> CaliData = new List<KeyValuePair<string, float[]>> {
@@ -28,12 +38,15 @@ namespace BetterJoyForCemu {
         }
 
         // Called from a Joycon's own read thread once per axis per packet while Calibrating is
-        // true - both the check and the appends happen under the same lock FinishCalibration
-        // uses to stop admission and snapshot the lists, so a sample can never land in the
-        // narrow window between "stop admitting" and "read for calculation."
-        public static void AddSample(List<int> accList, List<int> gyroList, int accValue, int gyroValue) {
+        // true - source identifies which controller the sample came from, so only the one
+        // actually being calibrated (CalibratingController) is admitted; every other connected
+        // controller's calls are silently ignored rather than contaminating the buffers. Both
+        // the check and the appends happen under the same lock FinishCalibration uses to stop
+        // admission and snapshot the lists, so a sample can never land in the narrow window
+        // between "stop admitting" and "read for calculation."
+        public static void AddSample(Joycon source, List<int> accList, List<int> gyroList, int accValue, int gyroValue) {
             lock (samplesLock) {
-                if (!Calibrating)
+                if (!Calibrating || source != CalibratingController)
                     return;
                 accList.Add(accValue);
                 gyroList.Add(gyroValue);
@@ -65,6 +78,7 @@ namespace BetterJoyForCemu {
             List<int> xg, yg, zg, xa, ya, za;
             lock (samplesLock) {
                 Calibrating = false;
+                CalibratingController = null;
                 xg = new List<int>(XG);
                 yg = new List<int>(YG);
                 zg = new List<int>(ZG);

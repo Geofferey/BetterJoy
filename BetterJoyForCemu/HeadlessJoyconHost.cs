@@ -334,8 +334,9 @@ namespace BetterJoyForCemu {
         // Mirrors MainForm's StartGetData/CalcData timing (calibration samples are gathered
         // into the shared CalibrationState buffers for a fixed ~3s window) - the "keep it flat"
         // pre-countdown is purely a GUI-local visual affordance, so it isn't reproduced here.
-        // CalibrationState is still process-global, matching the existing GUI-mode restriction
-        // that only one controller may be connected while calibrating.
+        // CalibrationState.CalibratingController scopes sample admission to this one padId, so
+        // other connected controllers staying connected/polling can't contaminate the buffers -
+        // no need to require exactly one controller connected total.
         //
         // int, not bool: admission is a check-and-set (see StartCalibration), which needs
         // Interlocked.CompareExchange to be atomic - a plain volatile bool read-then-write could
@@ -345,13 +346,11 @@ namespace BetterJoyForCemu {
         private int calibrationInProgress = 0;
 
         private void StartCalibration(int padId) {
-            // Captured once, before the guard - re-querying Program.mgr.j.First() a second time
-            // after admission (the controller this validated a moment earlier could disconnect
-            // in between) could throw on an empty sequence with the guard already set and no
-            // continuation left to ever release it. FirstOrDefault never throws either way.
-            Joycon jc = (Program.mgr != null && Program.mgr.j.Count == 1)
-                ? Program.mgr.j.FirstOrDefault(v => v.PadId == padId)
-                : null;
+            // Captured once, before the guard - re-querying for it a second time after admission
+            // (the controller this validated a moment earlier could disconnect in between) could
+            // throw with the guard already set and no continuation left to ever release it.
+            // FirstOrDefault never throws either way.
+            Joycon jc = Program.mgr?.j.FirstOrDefault(v => v.PadId == padId);
             if (jc == null) {
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
                 return;
@@ -368,6 +367,7 @@ namespace BetterJoyForCemu {
             SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
 
             CalibrationState.ClearSamples();
+            CalibrationState.CalibratingController = jc;
             CalibrationState.Calibrating = true;
 
             Task.Delay(3000).ContinueWith(_ => {
@@ -383,6 +383,7 @@ namespace BetterJoyForCemu {
                     SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
                 } finally {
                     CalibrationState.Calibrating = false;
+                    CalibrationState.CalibratingController = null;
                     Interlocked.Exchange(ref calibrationInProgress, 0);
                 }
             });

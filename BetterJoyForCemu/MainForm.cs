@@ -20,6 +20,7 @@ namespace BetterJoyForCemu {
         public bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
         public List<Button> con, loc;
         private bool calibrationInProgress = false;
+        private Joycon calibratingJoycon;
         private Timer countDown;
         private int count;
         private Timer clickTimer;
@@ -945,16 +946,20 @@ namespace BetterJoyForCemu {
                 RestoreCalibrateIcon();
                 return;
             }
-            if (Program.mgr.j.Count == 0) {
-                this.console.Text = "Please connect a single pro controller.";
+
+            // The specific controller you double-clicked, not just "whatever's first in the
+            // list" - CalibrationState scopes sample admission to this exact controller (see
+            // CalibrationState.CalibratingController), so other controllers staying connected
+            // and polling can no longer contaminate the buffers. That's what the old "exactly
+            // one controller connected" restriction here was actually working around.
+            Button button = sender as Button;
+            calibratingJoycon = button?.Tag as Joycon;
+            if (calibratingJoycon == null) {
+                this.console.Text = "Please connect a controller.";
                 RestoreCalibrateIcon();
                 return;
             }
-            if (Program.mgr.j.Count > 1) {
-                this.console.Text = "Please calibrate one controller at a time (disconnect others).";
-                RestoreCalibrateIcon();
-                return;
-            }
+
             calibrationInProgress = true;
             countDown = new Timer();
             this.count = 4;
@@ -968,6 +973,7 @@ namespace BetterJoyForCemu {
             CalibrationState.ClearSamples();
             countDown = new Timer();
             this.count = 3;
+            CalibrationState.CalibratingController = calibratingJoycon;
             CalibrationState.Calibrating = true;
             countDown.Tick += new EventHandler(CalcData);
             countDown.Interval = 1000;
@@ -993,12 +999,22 @@ namespace BetterJoyForCemu {
         private void CalcData(object sender, EventArgs e) {
             if (this.count == 0) {
                 countDown.Stop();
-                CalibrationState.Calibrating = false;
-                CalibrationState.FinishCalibration(Program.mgr.j.First().serial_number);
-                this.console.Text += "Calibration completed!!!" + "\r\n";
-                Program.mgr.j.First().getActiveData();
-                calibrationInProgress = false;
-                RestoreCalibrateIcon();
+                // calibratingJoycon captured once in StartCalibrate - a disconnect during the
+                // ~7 second countdown+collection window (the controller could legitimately be
+                // dropped mid-calibration) must not leave calibrationInProgress/the icon stuck,
+                // so this is a hard requirement, not just tidiness.
+                try {
+                    CalibrationState.FinishCalibration(calibratingJoycon.serial_number);
+                    this.console.Text += "Calibration completed!!!" + "\r\n";
+                    calibratingJoycon.getActiveData();
+                } catch {
+                    this.console.Text += "Calibration failed - was the controller disconnected?" + "\r\n";
+                } finally {
+                    CalibrationState.Calibrating = false;
+                    calibrationInProgress = false;
+                    calibratingJoycon = null;
+                    RestoreCalibrateIcon();
+                }
             } else {
                 this.count--;
             }

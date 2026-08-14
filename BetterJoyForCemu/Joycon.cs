@@ -1091,17 +1091,17 @@ namespace BetterJoyForCemu {
                             case 0:
                                 acc_g.X = (acc_r[i] - activeData[3]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.X = (gyr_r[i] - activeData[0]) * (816.0f / gyr_sen[i]);
-                                CalibrationState.AddSample(CalibrationState.XA, CalibrationState.XG, acc_r[i], gyr_r[i]);
+                                CalibrationState.AddSample(this, CalibrationState.XA, CalibrationState.XG, acc_r[i], gyr_r[i]);
                                 break;
                             case 1:
                                 acc_g.Y = (!isLeft ? -1 : 1) * (acc_r[i] - activeData[4]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.Y = -(!isLeft ? -1 : 1) * (gyr_r[i] - activeData[1]) * (816.0f / gyr_sen[i]);
-                                CalibrationState.AddSample(CalibrationState.YA, CalibrationState.YG, acc_r[i], gyr_r[i]);
+                                CalibrationState.AddSample(this, CalibrationState.YA, CalibrationState.YG, acc_r[i], gyr_r[i]);
                                 break;
                             case 2:
                                 acc_g.Z = (!isLeft ? -1 : 1) * (acc_r[i] - activeData[5]) * (1.0f / acc_sen[i]) * 4.0f;
                                 gyr_g.Z = -(!isLeft ? -1 : 1) * (gyr_r[i] - activeData[2]) * (816.0f / gyr_sen[i]);
-                                CalibrationState.AddSample(CalibrationState.ZA, CalibrationState.ZG, acc_r[i], gyr_r[i]);
+                                CalibrationState.AddSample(this, CalibrationState.ZA, CalibrationState.ZG, acc_r[i], gyr_r[i]);
                                 break;
                         }
                     }
