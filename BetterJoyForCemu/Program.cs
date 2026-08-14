@@ -175,13 +175,20 @@ namespace BetterJoyForCemu {
         // join loser handling above and JoinOrSplitJoycon). A controller whose PadId doesn't
         // change is left completely untouched - no churn, no risk to a game already using it.
         //
-        // A joined pair shares one rank between both halves, matching Joycon.other's setter
-        // (which also does Math.Min(...) between a pair to pick one LED value for both) - but
-        // only the pair's active half (the one actually holding a virtual controller) goes
-        // through AssignPadId; the passive half is deliberately left without one (see the
-        // auto-join/JoinOrSplitJoycon loser handling) and must stay that way, or a joined pair
-        // goes back to showing up as two separate XInputs. Its PadId is still kept in sync so a
-        // later split computes the right Math.Min LED value from up-to-date numbers.
+        // A joined pair shares one rank between both halves for LED display, matching
+        // Joycon.other's setter (which also does Math.Min(...) between a pair to pick one LED
+        // value for both) - but only the pair's active half (the one actually holding a virtual
+        // controller) goes through AssignPadId; the passive half is deliberately left without a
+        // virtual controller (see the auto-join/JoinOrSplitJoycon loser handling) and must stay
+        // that way, or a joined pair goes back to showing up as two separate XInputs.
+        //
+        // Critically, the passive half's actual PadId field is left completely untouched here -
+        // only its LED is refreshed. It already has its own distinct PadId from whenever it was
+        // originally connected (join never touches PadId, only out_xbox/out_ds4), parked and
+        // waiting for whenever this pair splits back apart. Overwriting it to match the active
+        // half's compacted rank - as an earlier version of this method did - made both halves
+        // share the same PadId, so splitting the pair later produced two controllers that both
+        // claimed to be the same player instead of two distinct ones.
         void ReassignPadIds() {
             var ranked = new List<Joycon>(j);
             ranked.Sort((a, b) => a.PadId.CompareTo(b.PadId));
@@ -207,7 +214,7 @@ namespace BetterJoyForCemu {
 
                 AssignPadId(active, rank);
                 if (passive != null)
-                    passive.PadId = rank;
+                    passive.RequestLEDUpdate(rank);
 
                 rank++;
             }
