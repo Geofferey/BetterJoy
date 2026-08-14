@@ -68,7 +68,13 @@ namespace BetterJoyForCemu {
 					string line = String.Empty;
 					int lineNO = 0;
 					while ((line = file.ReadLine()) != null) {
-						string[] vs = line.Split();
+						// RemoveEmptyEntries matters here specifically for the calibration lines
+						// below: a genuinely blank line (e.g. no stick recalibration has ever
+						// been saved yet) must parse to zero entries. line.Split() with no
+						// options returns a single-element [""] for an empty string, which would
+						// otherwise silently add one bogus entry keyed "" with all-zero data to
+						// stickCaliData/stick2CaliData on every startup.
+						string[] vs = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
 						try {
 							if (lineNO < settingsNum) { // load in basic settings
 								variables[vs[0]] = vs[1];
