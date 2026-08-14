@@ -126,13 +126,27 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_Load(object sender, EventArgs e) {
-            if (AppPaths.ServiceModeEnabled && IsBetterJoyServiceRunning()) {
+            // Deferring hardware ownership to a running service is NOT conditional on config
+            // sync being opted into - those are separate concerns (one prevents two processes
+            // fighting over the same physical device and creating a duplicate virtual
+            // controller; the other just controls whether settings changes here reach the
+            // service). Gating this on AppPaths.ServiceModeEnabled meant a GUI that never had
+            // "Sync Config with Service" clicked would always run its own pipeline even with the
+            // service already running - exactly the duplicate-controller bug this exists to fix.
+            if (IsBetterJoyServiceRunning()) {
                 serviceClient = new ServiceControlClient();
                 isRemoteMode = serviceClient.Connect();
             }
 
             if (isRemoteMode) {
                 WireServiceClientEvents();
+
+                // Config.Init() normally runs inside Program.Start() (see its comment there for
+                // why) - remote mode never calls that, so without this, Config.variables stays
+                // completely empty and every Config.Value(...) lookup returns "". Map Buttons
+                // (Reassign.GetPrettyName) doesn't guard against that, so it crashed with
+                // ArgumentOutOfRangeException the moment anyone opened it in remote mode.
+                Config.Init(CalibrationState.CaliData);
 
                 // Add Controllers/blacklist (_3rdPartyControllers dialog) reads/edits these two
                 // in-memory lists - normally populated by Program.Start()'s GUI branch, which
@@ -141,6 +155,9 @@ namespace BetterJoyForCemu {
                 _3rdPartyControllers.LoadIntoProgramLists();
 
                 AppendTextBox("Connected to the BetterJoy service - it owns the controllers; this window shows live status only.\r\n");
+                if (!AppPaths.ServiceModeEnabled)
+                    AppendTextBox("Config isn't synced with the service yet - settings/remap changes made here won't reach it until you use \"Sync Config with Service\".\r\n");
+
                 serviceClient.RequestSnapshot();
             } else {
                 Program.Start();

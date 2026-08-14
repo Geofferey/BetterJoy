@@ -34,7 +34,13 @@ namespace BetterJoyForCemu {
             TokenImpersonation,
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        // CharSet must be set here explicitly - DllImport's CharSet = Unicode on
+        // CreateProcessAsUser (below) only governs string parameters passed directly; it does
+        // NOT cascade into a struct passed by ref. Without this, lpDesktop marshals as ANSI
+        // while CreateProcessAsUserW (the entry point actually resolved) reads STARTUPINFOW
+        // expecting UTF-16 - a width mismatch that manifested as heap corruption
+        // (STATUS_HEAP_CORRUPTION) rather than a clean failure.
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct STARTUPINFO {
             public int cb;
             public string lpReserved;

@@ -220,18 +220,37 @@ namespace BetterJoyForCemu {
             AcceptNextControlConnection();
         }
 
-        private void AcceptNextControlConnection() {
-            var newPipe = new NamedPipeServerStream(
-                ServiceControlIpc.PipeName,
-                PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous,
-                0,
-                0,
-                InputIpc.CreateCrossSessionPipeSecurity());
+        // The real fix for the DACL missing a SYSTEM grant lives in
+        // InputIpc.CreateCrossSessionPipeSecurity (see its comment) - creating a brand new
+        // object succeeds regardless of its own DACL, but every instance after the first of an
+        // already-existing named pipe is checked against it, so without an explicit grant for
+        // the service's own account, only the first accept-loop iteration ever worked. Reusing
+        // one PipeSecurity instance here isn't load-bearing for that bug, but avoids rebuilding
+        // it on every reconnect for no reason.
+        private static readonly PipeSecurity ControlPipeSecurity = InputIpc.CreateCrossSessionPipeSecurity();
 
-            newPipe.BeginWaitForConnection(OnControlClientConnected, newPipe);
+        private void AcceptNextControlConnection() {
+            // This whole control channel is a status/convenience feature layered on top of the
+            // core HID/ViGEm pipeline, which has nothing to do with it - an exception here
+            // (pipe creation failing for any reason) must never be allowed to propagate and take
+            // the whole service down with it, the way the DACL bug above did. Log and stop
+            // trying rather than crash; a GUI just won't get live status until the service is
+            // restarted with whatever caused this fixed.
+            try {
+                var newPipe = new NamedPipeServerStream(
+                    ServiceControlIpc.PipeName,
+                    PipeDirection.InOut,
+                    NamedPipeServerStream.MaxAllowedServerInstances,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous,
+                    0,
+                    0,
+                    ControlPipeSecurity);
+
+                newPipe.BeginWaitForConnection(OnControlClientConnected, newPipe);
+            } catch (Exception ex) {
+                AppendTextBox("GUI control pipe stopped accepting connections: " + ex.Message);
+            }
         }
 
         private void OnControlClientConnected(IAsyncResult result) {

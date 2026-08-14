@@ -54,13 +54,25 @@ namespace BetterJoyForCemu {
     public static class InputIpc {
         public const string PipeNamePrefix = "BetterJoyInputHelper_";
 
-        // The pipe crosses session boundaries (service in Session 0, helper in the interactive
-        // session), so the default ACL - which for a SYSTEM-created pipe would not otherwise
-        // grant a regular user access - needs to be widened explicitly.
+        // The pipe crosses session boundaries (service in Session 0, helper/GUI in the
+        // interactive session), so the default ACL - which for a SYSTEM-created pipe would not
+        // otherwise grant a regular user access - needs to be widened explicitly.
         public static PipeSecurity CreateCrossSessionPipeSecurity() {
             var security = new PipeSecurity();
+
             var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
             security.AddAccessRule(new PipeAccessRule(authenticatedUsers, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+
+            // A custom DACL REPLACES the default one entirely rather than adding to it - without
+            // an explicit grant here, the service's own account (SYSTEM) has no listed rights on
+            // its own pipe. That doesn't stop the first CreateNamedPipe call (which establishes
+            // the object), but every instance after that - the normal case for a long-lived,
+            // reconnectable server pipe like this one - fails with UnauthorizedAccessException,
+            // since creating an additional instance of an existing named pipe requires rights on
+            // the existing object too, not just on connecting to it as a client.
+            SecurityIdentifier currentUser = WindowsIdentity.GetCurrent().User;
+            security.AddAccessRule(new PipeAccessRule(currentUser, PipeAccessRights.FullControl, AccessControlType.Allow));
+
             return security;
         }
     }

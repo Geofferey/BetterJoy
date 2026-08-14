@@ -45,9 +45,9 @@ namespace BetterJoyForCemu {
 
         // Called from the GUI (see MainForm) when the user turns on "sync configuration with the
         // Windows Service" - copies whatever's already in the per-user location into the shared
-        // one (without overwriting anything already there) and drops the flag file, so this and
-        // every future launch (GUI or service) resolves DataDir to the shared location. Doesn't
-        // touch the *current* process's already-resolved DataDir - takes effect next launch.
+        // one and drops the flag file, so this and every future launch (GUI or service) resolves
+        // DataDir to the shared location. Doesn't touch the *current* process's already-resolved
+        // DataDir - takes effect next launch.
         public static void EnableServiceMode() {
             Directory.CreateDirectory(SharedDir);
             EnsureSharedDirWritableByUsers(SharedDir);
@@ -57,9 +57,14 @@ namespace BetterJoyForCemu {
                     if (Path.GetFileName(file) == ServiceModeFlagFileName)
                         continue;
 
+                    // Overwrite, don't skip, anything already at the destination - this is an
+                    // explicit, confirmed user action ("push my current settings to be the
+                    // shared ones"), and the service independently seeds the shared directory
+                    // with its own defaults on its own first run regardless of whether this was
+                    // ever clicked. A skip-if-exists copy here meant clicking this after the
+                    // service had already run once silently copied nothing at all.
                     string dest = Path.Combine(SharedDir, Path.GetFileName(file));
-                    if (!File.Exists(dest))
-                        File.Copy(file, dest);
+                    File.Copy(file, dest, true);
                 }
             }
 

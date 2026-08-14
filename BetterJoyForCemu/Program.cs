@@ -276,13 +276,20 @@ namespace BetterJoyForCemu {
                     }
                     // -------------------- //
 
+                    // hid_open_path returns a null handle (rather than throwing) when it can't
+                    // open the device - already exclusively held by another process racing for
+                    // the same physical device, momentarily unavailable mid-HidHide-toggle, etc.
+                    // Passing that straight into hid_set_nonblocking used to crash the whole
+                    // process with an unrecoverable AccessViolationException: native access
+                    // violations are a "corrupted state exception" the CLR deliberately lets
+                    // bypass ordinary try/catch (since .NET 4.0), so the catch here never
+                    // actually protected against this - validate the handle first instead.
                     IntPtr handle = HIDapi.hid_open_path(enumerate.path);
-                    try {
-                        HIDapi.hid_set_nonblocking(handle, 1);
-                    } catch {
+                    if (handle == IntPtr.Zero) {
                         form.AppendTextBox("Unable to open path to device - are you using the correct (64 vs 32-bit) version for your PC?\r\n");
                         break;
                     }
+                    HIDapi.hid_set_nonblocking(handle, 1);
 
                     bool isPro = prod_id == product_pro;
                     bool isSnes = prod_id == product_snes;
