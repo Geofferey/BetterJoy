@@ -33,14 +33,18 @@ namespace BetterJoyForCemu {
             set {
                 _other = value;
 
-                // If the other Joycon is itself, the Joycon is sideways
+                // Queued (RequestLEDUpdate), not written directly - this setter runs on
+                // whatever thread is doing the join/split (scan thread for auto-join, UI/pipe
+                // thread for a manual one), which by this point always races this Joycon's own
+                // already-running Poll() thread for the HID handle. See RequestLEDUpdate's
+                // comment.
                 if (_other == null || _other == this) {
-                    // Set LED to current Pad ID
-                    SetLEDByPlayerNum(PadId);
+                    // If the other Joycon is itself, the Joycon is sideways - LED to current PadId
+                    RequestLEDUpdate(PadId);
                 } else {
                     // Set LED to current Joycon Pair
                     int lowestPadId = Math.Min(_other.PadId, PadId);
-                    SetLEDByPlayerNum(lowestPadId);
+                    RequestLEDUpdate(lowestPadId);
                 }
             }
         }
@@ -919,10 +923,31 @@ namespace BetterJoyForCemu {
         private bool retiredDuplicates = false;
 
         private Thread PollThreadObj;
+
+        // Requested LED player-number update, applied by this Joycon's own Poll() thread rather
+        // than the caller's - SetLEDByPlayerNum/Subcommand does a blocking HID write+read on the
+        // same handle Poll() is concurrently reading from, so calling it directly from a foreign
+        // thread (the scan thread doing a mass re-rank after a drop, or Joycon.other's setter
+        // during a join/split) on an already-Begin()'d controller risked the response getting
+        // interleaved with normal packet reads and the LED update silently timing out - matching
+        // the existing rumble_obj queue pattern below, just for a single latest-wins value
+        // instead of a FIFO, since only the most recent requested LED value matters. -1 means "no
+        // update pending" - Interlocked.Exchange (not volatile, which int? can't be) makes the
+        // read-and-clear in Poll() atomic against a concurrent RequestLEDUpdate call.
+        private int pendingLedPlayerNum = -1;
+
+        public void RequestLEDUpdate(int playerNum) {
+            Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
+        }
+
         private void Poll() {
             stop_polling = false;
             int attempts = 0;
             while (!stop_polling & state > state_.NO_JOYCONS) {
+                int requestedLed = Interlocked.Exchange(ref pendingLedPlayerNum, -1);
+                if (requestedLed >= 0) {
+                    SetLEDByPlayerNum(requestedLed);
+                }
                 if (rumble_obj.queue.Count > 0) {
                     SendRumble(rumble_obj.GetData());
                 }

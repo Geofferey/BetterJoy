@@ -125,18 +125,7 @@ namespace BetterJoyForCemu {
                         // the auto-join block above, which disconnects whichever side loses the
                         // join) - otherwise it's left solo with no virtual controller at all.
                         // No-op if the survivor already has one (it was the active side).
-                        if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]) && survivor.out_xbox == null) {
-                            survivor.out_xbox = new Controller.OutputControllerXbox360();
-                            if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                                survivor.out_xbox.FeedbackReceived += survivor.ReceiveRumble;
-                            survivor.out_xbox.Connect();
-                        }
-                        if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]) && survivor.out_ds4 == null) {
-                            survivor.out_ds4 = new Controller.OutputControllerDualShock4();
-                            if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                                survivor.out_ds4.FeedbackReceived += survivor.Ds4_FeedbackReceived;
-                            survivor.out_ds4.Connect();
-                        }
+                        CreateOutputControllers(survivor);
                     }
 
                     joycon.Detach(true);
@@ -152,6 +141,15 @@ namespace BetterJoyForCemu {
             foreach (Joycon v in rem)
                 j.Remove(v);
 
+            // Compact PadIds for whatever's left so dropping down to fewer controllers -
+            // especially down to just one - reads as player 1 again, matching what unplugging
+            // and replugging the physical controller already does today (which is exactly what
+            // this is standing in for, so the user doesn't have to do that by hand). See
+            // ReassignPadIds for why this also means tearing down and recreating each affected
+            // survivor's virtual controller, not just its LED.
+            if (rem.Count > 0)
+                ReassignPadIds();
+
             // Notified only after removal is fully done (list + pairing), not before - MainForm's
             // implementation doesn't care (it acts on the passed-in Joycon references directly,
             // not by re-reading the controller list), but HeadlessJoyconHost's does: it rebuilds
@@ -161,6 +159,94 @@ namespace BetterJoyForCemu {
             // connecting - would finally push a snapshot that happened to already be missing it).
             for (int i = 0; i < droppedNotify.Count; i++)
                 form.HandleJoyconDropped(droppedNotify[i], partnerNotify[i]);
+        }
+
+        // Compacts PadId assignments for whatever's currently in j down to 0..n-1, based on each
+        // controller's existing PadId order. Dropping controllers can leave survivors holding
+        // non-contiguous PadIds (e.g. players 1 and 3 remain after player 2 disconnects) - this
+        // closes the gaps, most visibly in the "down to just one controller left" case, which
+        // should read as player 1 without the user having to unplug/replug it by hand.
+        //
+        // Unlike the old LED-only version, a controller whose PadId actually changes gets its
+        // virtual controller torn down and recreated at the new identity via AssignPadId, not
+        // just a re-painted LED: ViGEmBus has no API to rename an already-Connect()ed target's
+        // XInput slot, so a fresh Connect() is how identity changes here - the same "destroy and
+        // recreate" pattern already tested and confirmed working for join/split (see the auto-
+        // join loser handling above and JoinOrSplitJoycon). A controller whose PadId doesn't
+        // change is left completely untouched - no churn, no risk to a game already using it.
+        //
+        // A joined pair shares one rank between both halves, matching Joycon.other's setter
+        // (which also does Math.Min(...) between a pair to pick one LED value for both) - but
+        // only the pair's active half (the one actually holding a virtual controller) goes
+        // through AssignPadId; the passive half is deliberately left without one (see the
+        // auto-join/JoinOrSplitJoycon loser handling) and must stay that way, or a joined pair
+        // goes back to showing up as two separate XInputs. Its PadId is still kept in sync so a
+        // later split computes the right Math.Min LED value from up-to-date numbers.
+        void ReassignPadIds() {
+            var ranked = new List<Joycon>(j);
+            ranked.Sort((a, b) => a.PadId.CompareTo(b.PadId));
+
+            var assigned = new HashSet<Joycon>();
+            int rank = 0;
+            foreach (Joycon jc in ranked) {
+                if (assigned.Contains(jc))
+                    continue;
+
+                assigned.Add(jc);
+                bool isPair = jc.other != null && jc.other != jc;
+                if (isPair)
+                    assigned.Add(jc.other);
+
+                Joycon active = jc;
+                Joycon passive = null;
+                if (isPair) {
+                    bool jcHasOutput = jc.out_xbox != null || jc.out_ds4 != null;
+                    active = jcHasOutput ? jc : jc.other;
+                    passive = active == jc ? jc.other : jc;
+                }
+
+                AssignPadId(active, rank);
+                if (passive != null)
+                    passive.PadId = rank;
+
+                rank++;
+            }
+        }
+
+        void AssignPadId(Joycon jc, int newPadId) {
+            if (jc.PadId == newPadId)
+                return;
+
+            jc.PadId = newPadId;
+            jc.RequestLEDUpdate(newPadId);
+
+            if (jc.out_xbox != null) {
+                try { jc.out_xbox.Disconnect(); } catch { }
+                jc.out_xbox = null;
+            }
+            if (jc.out_ds4 != null) {
+                try { jc.out_ds4.Disconnect(); } catch { }
+                jc.out_ds4 = null;
+            }
+            CreateOutputControllers(jc);
+        }
+
+        // Shared by AssignPadId and CleanUp's survivor-restore, both of which need a freshly
+        // Connect()ed virtual controller built from the same config-driven settings. No-op for
+        // whichever half(s) already have one.
+        void CreateOutputControllers(Joycon jc) {
+            if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]) && jc.out_xbox == null) {
+                jc.out_xbox = new Controller.OutputControllerXbox360();
+                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
+                jc.out_xbox.Connect();
+            }
+            if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]) && jc.out_ds4 == null) {
+                jc.out_ds4 = new Controller.OutputControllerDualShock4();
+                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
+                jc.out_ds4.Connect();
+            }
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
