@@ -39,8 +39,14 @@ namespace BetterJoyForCemu {
 			return count;
 		}
 
+		static readonly string[] DefaultKeys = { "ProgressiveScan", "StartInTray", "capture", "home", "sl_l", "sl_r", "sr_l", "sr_r", "shake", "reset_mouse", "active_gyro" };
+
+		// Startup only - tolerant/best-effort (a malformed individual line is skipped, not
+		// fatal) and destructive when the file looks stale (deletes and recreates on too few
+		// lines). Safe here because nothing else is racing this file at process start. See
+		// ReloadSettingsOnly for the live-reload path, which can't make either assumption.
 		public static void Init(List<KeyValuePair<string, float[]>> caliData) {
-			foreach (string s in new string[] { "ProgressiveScan", "StartInTray", "capture", "home", "sl_l", "sl_r", "sr_l", "sr_r", "shake", "reset_mouse", "active_gyro" })
+			foreach (string s in DefaultKeys)
 				variables[s] = GetDefaultValue(s);
 
 			if (File.Exists(path)) {
@@ -91,6 +97,45 @@ namespace BetterJoyForCemu {
 					file.WriteLine(caliStr);
 				}
 			}
+		}
+
+		// Live cross-process reload (see HeadlessJoyconHost's FileSystemWatcher) - deliberately
+		// far more conservative than Init(): the shared file can be observed mid-write by
+		// another process at any time, and this runs on every debounced change, not once at a
+		// controlled startup. Never deletes or rewrites the file - a short/malformed read here
+		// could just be a transient snapshot of someone else's in-progress write, not evidence
+		// the format is genuinely stale, and destroying the user's valid settings over that
+		// would be far worse than just retrying on the next watcher event. Parses into a
+		// temporary dictionary and only publishes it if the WHOLE read succeeds, so a torn read
+		// never partially overwrites a valid in-memory snapshot with a mix of old and new
+		// values. Never touches calibration data at all - that's handled entirely in-process by
+		// StartCalibration and never needs a file-driven reload.
+		public static void ReloadSettingsOnly() {
+			if (!File.Exists(path))
+				return;
+
+			if (CountLinesInFile(path) < settingsNum)
+				return; // possibly just a transient mid-write snapshot - retry next watcher event
+
+			var newVariables = new Dictionary<string, string>();
+			foreach (string s in DefaultKeys)
+				newVariables[s] = GetDefaultValue(s);
+
+			try {
+				using (StreamReader file = new StreamReader(path)) {
+					string line;
+					int lineNO = 0;
+					while ((line = file.ReadLine()) != null && lineNO < settingsNum) {
+						string[] vs = line.Split();
+						newVariables[vs[0]] = vs[1];
+						lineNO++;
+					}
+				}
+			} catch {
+				return; // torn/locked read - keep current in-memory settings, retry next event
+			}
+
+			variables = newVariables;
 		}
 
 		public static int IntValue(string key) {

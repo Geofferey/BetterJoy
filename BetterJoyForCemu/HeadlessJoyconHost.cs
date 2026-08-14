@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace BetterJoyForCemu {
@@ -326,23 +327,55 @@ namespace BetterJoyForCemu {
         // pre-countdown is purely a GUI-local visual affordance, so it isn't reproduced here.
         // CalibrationState is still process-global, matching the existing GUI-mode restriction
         // that only one controller may be connected while calibrating.
+        //
+        // int, not bool: admission is a check-and-set (see StartCalibration), which needs
+        // Interlocked.CompareExchange to be atomic - a plain volatile bool read-then-write could
+        // let two StartCalibration calls on different threads both pass the check before either
+        // sets it, if a stale ControlReadLoop connection hasn't yet realized it's been
+        // superseded (see AcceptNextControlConnection) and a new one calls in around the same time.
+        private int calibrationInProgress = 0;
+
         private void StartCalibration(int padId) {
-            if (Program.mgr == null || Program.mgr.j.Count != 1 || Program.mgr.j.First().PadId != padId) {
+            // Captured once, before the guard - re-querying Program.mgr.j.First() a second time
+            // after admission (the controller this validated a moment earlier could disconnect
+            // in between) could throw on an empty sequence with the guard already set and no
+            // continuation left to ever release it. FirstOrDefault never throws either way.
+            Joycon jc = (Program.mgr != null && Program.mgr.j.Count == 1)
+                ? Program.mgr.j.FirstOrDefault(v => v.PadId == padId)
+                : null;
+            if (jc == null) {
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
                 return;
             }
 
-            Joycon jc = Program.mgr.j.First();
+            if (Interlocked.CompareExchange(ref calibrationInProgress, 1, 0) != 0) {
+                // Already calibrating something - a second request arriving mid-window would
+                // call ClearSamples() over an in-progress collection and leave two pending
+                // completions racing the same CalibrationState buffers.
+                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
+                return;
+            }
+
             SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
 
             CalibrationState.ClearSamples();
             CalibrationState.Calibrating = true;
 
             Task.Delay(3000).ContinueWith(_ => {
-                CalibrationState.Calibrating = false;
-                CalibrationState.FinishCalibration(jc.serial_number);
-                jc.getActiveData();
-                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));
+                // The guard and CalibrationState.Calibrating MUST clear even if the controller
+                // disconnected mid-window, no samples came in, or the save failed - otherwise
+                // calibrationInProgress stays stuck at 1 forever and every future calibration
+                // request fails until the service restarts.
+                try {
+                    CalibrationState.FinishCalibration(jc.serial_number);
+                    jc.getActiveData();
+                    SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));
+                } catch {
+                    SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
+                } finally {
+                    CalibrationState.Calibrating = false;
+                    Interlocked.Exchange(ref calibrationInProgress, 0);
+                }
             });
         }
 
@@ -428,9 +461,17 @@ namespace BetterJoyForCemu {
 
         private void ReloadSharedConfig() {
             try {
-                Config.Init(CalibrationState.CaliData);
+                // Settings/keybinds only, not calibration data (see Config.ReloadSettingsOnly) -
+                // calibration is handled entirely in-process by StartCalibration and never
+                // needs a file-driven reload, so there's no reason to risk it here.
+                Config.ReloadSettingsOnly();
                 ConfigurationManager.RefreshSection("appSettings");
-                _3rdPartyControllers.LoadIntoProgramLists();
+
+                // Program.thirdPartyCons/blacklistedCons are plain Lists a scan pass iterates
+                // directly - rebuilding them (Clear()+AddRange()) outside the scan lock could
+                // race that iteration. See JoyconManager.RunExclusiveOfScanning.
+                Program.mgr?.RunExclusiveOfScanning(_3rdPartyControllers.LoadIntoProgramLists);
+
                 AppendTextBox("Reloaded shared configuration after a change.");
             } catch (Exception ex) {
                 AppendTextBox("Failed to reload shared configuration: " + ex.Message);

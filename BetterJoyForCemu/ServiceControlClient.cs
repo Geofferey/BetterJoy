@@ -28,6 +28,9 @@ namespace BetterJoyForCemu {
             try {
                 newPipe.Connect(timeoutMs);
             } catch {
+                // A failed/timed-out attempt still allocated a real handle - leaked on every
+                // retry otherwise (TryConnectWithRetries in MainForm calls this up to 3 times).
+                newPipe.Dispose();
                 return false;
             }
 

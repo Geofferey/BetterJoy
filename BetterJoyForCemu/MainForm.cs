@@ -891,7 +891,11 @@ namespace BetterJoyForCemu {
                     settings[KeyCtl].Value = ((TextBox)valCtl).Text.ToLower();
                 }
 
-                if (KeyCtl == "HomeLEDOn") {
+                // Program.mgr is null in remote mode (Program.Start() never ran there) - the
+                // value is still saved to the config file either way (see above), so a synced
+                // service picks it up for its own newly-connecting controllers via its file
+                // watcher; there just isn't a live Joycon list here to apply it to immediately.
+                if (KeyCtl == "HomeLEDOn" && Program.mgr != null) {
                     bool on = settings[KeyCtl].Value.ToLower() == "true";
                     foreach (Joycon j in Program.mgr.j) {
                         j.SetHomeLight(on);

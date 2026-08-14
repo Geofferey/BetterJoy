@@ -40,6 +40,19 @@ namespace BetterJoyForCemu {
 
         System.Timers.Timer controllerCheck;
 
+        // Guards a scan pass (CleanUp + CheckForNewControllers) end to end. System.Timers.Timer
+        // can fire Elapsed again before a slow pass has finished (HidHide retries, PnP calls),
+        // so this also prevents two passes running concurrently against the same controller
+        // list/hiddenInstanceIds - not just the shutdown race StopScanning uses it for below.
+        readonly object scanLock = new object();
+
+        // Timer.Stop() only blocks FUTURE ticks - an Elapsed callback that already fired and is
+        // queued on the ThreadPool, but hasn't reached the scanLock yet, isn't covered by that.
+        // Set before the rendezvous below (not inside it) so a callback which acquires scanLock
+        // at any point after this is set - whether it was already queued or not - sees it and
+        // exits without doing any scan work, instead of racing full teardown.
+        volatile bool scanningStopped = false;
+
         public static JoyconManager Instance {
             get { return instance; }
         }
@@ -56,11 +69,39 @@ namespace BetterJoyForCemu {
             controllerCheck.Start();
         }
 
+        // Stops future scan passes AND blocks until any pass already in progress (or already
+        // queued on the ThreadPool, about to start) has exited without doing further work.
+        // controllerCheck.Stop() alone only blocks brand new ticks from firing - a callback that
+        // fired just before Stop() but hadn't yet acquired scanLock would find it uncontested
+        // and run anyway, racing full teardown (OnApplicationQuit detaching every controller and
+        // calling HIDapi.hid_exit()). Setting scanningStopped first closes that: any callback
+        // that acquires scanLock after this point - already queued or not - checks the flag
+        // before doing anything and exits immediately.
+        public void StopScanning() {
+            scanningStopped = true;
+            controllerCheck?.Stop();
+            lock (scanLock) { }
+            controllerCheck?.Dispose();
+        }
+
         bool ControllerAlreadyAdded(string path) {
             foreach (Joycon v in j)
                 if (v.path == path)
                     return true;
             return false;
+        }
+
+        // Smallest PadId not currently in use by a connected controller - see the call site for
+        // why j.Count itself isn't safe to use directly.
+        int NextAvailablePadId() {
+            var used = new HashSet<int>();
+            foreach (Joycon v in j)
+                used.Add(v.PadId);
+
+            int id = 0;
+            while (used.Contains(id))
+                id++;
+            return id;
         }
 
         void CleanUp() { // removes dropped controllers from list
@@ -103,9 +144,26 @@ namespace BetterJoyForCemu {
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
-            CleanUp();
-            if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
-                CheckForNewControllers();
+            lock (scanLock) {
+                if (scanningStopped)
+                    return;
+
+                CleanUp();
+                if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
+                    CheckForNewControllers();
+                }
+            }
+        }
+
+        // Lets a caller outside the scan loop (see HeadlessJoyconHost's config-file watcher)
+        // mutate state a scan pass reads - e.g. Program.thirdPartyCons/blacklistedCons via
+        // _3rdPartyControllers.LoadIntoProgramLists - without racing CheckForNewControllers'
+        // own iteration over them. Those are plain Lists, not ConcurrentList, so a Clear()+
+        // AddRange() from another thread while a scan enumerates them could throw "Collection
+        // was modified" or hand device classification a half-rebuilt list.
+        public void RunExclusiveOfScanning(Action action) {
+            lock (scanLock) {
+                action();
             }
         }
 
@@ -126,7 +184,9 @@ namespace BetterJoyForCemu {
                 try {
                     instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
                     Program.hidHide.AddBlockedInstanceId(instanceId);
-                    Program.hiddenInstanceIds.Add(instanceId);
+                    lock (Program.hiddenInstanceIdsLock) {
+                        Program.hiddenInstanceIds.Add(instanceId);
+                    }
                 } catch {
                     instanceId = null;
                 }
@@ -308,7 +368,14 @@ namespace BetterJoyForCemu {
                     bool isPro = prod_id == product_pro;
                     bool isSnes = prod_id == product_snes;
                     bool is64 = prod_id == product_n64;
-                    j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, j.Count, isPro, isSnes, is64,thirdParty != null));
+                    // j.Count (list size, not a stable slot) duplicates an existing PadId the
+                    // moment a middle controller disconnects and a new one connects afterward -
+                    // e.g. with PadIds 0/1/2 connected, 1 drops, the next new controller would
+                    // also get j.Count == 2, colliding with the controller still holding it.
+                    // Remote-mode commands (TestRumble/JoinOrSplit/StartCalibration) resolve a
+                    // controller by PadId alone, so a collision could route a command to the
+                    // wrong physical controller, not just misrender a GUI slot.
+                    j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64,thirdParty != null));
 
                     foundNew = true;
                     j.Last().form = form;
@@ -420,7 +487,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            controllerCheck.Stop();
+            StopScanning();
             HIDapi.hid_exit();
         }
     }
@@ -446,6 +513,13 @@ namespace BetterJoyForCemu {
         static public bool useHidHide = Boolean.Parse(ConfigurationManager.AppSettings["UseHidHide"]);
         public static IHidHideControlService hidHide;
         public static readonly List<string> hiddenInstanceIds = new List<string>();
+
+        // Guards hiddenInstanceIds - a plain List<string> accessed from both the scan timer's
+        // background thread (JoyconManager.TryHideController, adding) and Stop() below
+        // (enumerating + clearing) on whatever thread calls it. Stopping the scan timer first
+        // (see StopScanning) closes most of the window but doesn't wait for a callback already
+        // in flight to finish - this lock is what actually guarantees no concurrent mutation.
+        public static readonly object hiddenInstanceIdsLock = new object();
 
         public static List<SController> thirdPartyCons = new List<SController>();
         public static List<SController> blacklistedCons = new List<SController>();
@@ -589,11 +663,17 @@ namespace BetterJoyForCemu {
         }
 
         public static void Stop() {
+            // Stop the background scan first - otherwise it can still be adding to
+            // hiddenInstanceIds (TryHideController) while the loop below enumerates/clears it.
+            mgr.StopScanning();
+
             if (useHidHide && hidHide != null && Boolean.Parse(ConfigurationManager.AppSettings["UnhideOnExit"])) {
-                foreach (string id in hiddenInstanceIds) {
-                    try { hidHide.RemoveBlockedInstanceId(id); } catch { }
+                lock (hiddenInstanceIdsLock) {
+                    foreach (string id in hiddenInstanceIds) {
+                        try { hidHide.RemoveBlockedInstanceId(id); } catch { }
+                    }
+                    hiddenInstanceIds.Clear();
                 }
-                hiddenInstanceIds.Clear();
             }
 
             keyboard?.Dispose(); mouse?.Dispose();
