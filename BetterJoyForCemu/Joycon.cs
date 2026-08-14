@@ -782,7 +782,27 @@ namespace BetterJoyForCemu {
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
 
+        // A/B/X/Y exist as such only on a Pro controller or a joined pair (see
+        // ProcessButtonsAndStick) - a solo Joycon's 4 primary buttons live at the DPAD_* indices
+        // instead regardless of which physical side it is (they're only labeled a d-pad on the
+        // left one; the right one's are the same 4 buttons Nintendo prints as A/B/X/Y).
+        private bool CalibrationConfirmPressed() {
+            if (isPro || (other != null && other != this))
+                return buttons_down[(int)Button.A] || buttons_down[(int)Button.B] || buttons_down[(int)Button.X] || buttons_down[(int)Button.Y];
+            return buttons_down[(int)Button.DPAD_UP] || buttons_down[(int)Button.DPAD_DOWN] || buttons_down[(int)Button.DPAD_LEFT] || buttons_down[(int)Button.DPAD_RIGHT];
+        }
+
         private void DoThingsWithButtons() {
+            // Checked first and returns early like the other button-driven side effects below -
+            // a face button doubling as "confirm" only ever matters while a calibration prompt
+            // is actually showing (PendingConfirmController names this exact controller only
+            // then), so there's no real conflict with its normal mapped behavior the rest of the
+            // time.
+            if (CalibrationState.PendingConfirmController == this && CalibrationConfirmPressed()) {
+                form.HandleCalibrationConfirm(this);
+                return;
+            }
+
             int powerOffButton = (int)((isPro || !isLeft || other != null) ? Button.HOME : Button.CAPTURE);
 
             long timestamp = Stopwatch.GetTimestamp();

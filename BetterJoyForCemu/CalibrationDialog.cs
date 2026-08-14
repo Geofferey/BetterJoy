@@ -28,7 +28,11 @@ namespace BetterJoyForCemu {
             MinimizeBox = false;
             MaximizeBox = false;
             ControlBox = false; // closed only by MainForm once the flow actually finishes - see FinishCalibrationFlow
-            StartPosition = FormStartPosition.CenterParent;
+            // CenterScreen, not CenterParent - the user's likely tabbed into a game to actually
+            // move the controller, so centering on wherever MainForm happens to be sitting
+            // (possibly minimized to tray, or off in a corner) isn't the same as visibly
+            // centered on the screen they're looking at.
+            StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(360, 170);
             TopMost = true;
 
@@ -61,6 +65,12 @@ namespace BetterJoyForCemu {
             Controls.Add(instructionLabel);
             Controls.Add(countLabel);
             Controls.Add(actionButton);
+
+            // AcceptButton makes Enter trigger it regardless of focus; Select() in
+            // ShowStartPrompt/ShowDonePrompt additionally lands actual keyboard focus on it so
+            // Space works too and it shows as the visibly-selected control - between the two,
+            // the user never needs the mouse at all to advance a step.
+            AcceptButton = actionButton;
         }
 
         public void SetStep(int stepNumber, int totalSteps, string stepName) {
@@ -75,18 +85,26 @@ namespace BetterJoyForCemu {
             countLabel.Visible = false;
             actionButton.Text = "Start";
             actionButton.Visible = true;
+            RaiseToForeground();
+            actionButton.Select();
         }
 
         public void ShowDonePrompt() {
             countLabel.Visible = false;
             actionButton.Text = "Done, I'm Finished";
             actionButton.Visible = true;
+            RaiseToForeground();
+            actionButton.Select();
         }
 
         public void HidePrompt() {
             actionButton.Visible = false;
         }
 
+        // Deliberately not called from here - this fires once per second during gyro's
+        // countdown (see its caller), and re-stealing focus that often would be more annoying
+        // than helpful. Start/Done/ShowResult are each a genuinely new thing to act on; a
+        // countdown tick mid-phase isn't.
         public void ShowCountdown(int count) {
             actionButton.Visible = false;
             countLabel.Visible = true;
@@ -97,6 +115,18 @@ namespace BetterJoyForCemu {
             actionButton.Visible = false;
             countLabel.Visible = false;
             instructionLabel.Text = text;
+            RaiseToForeground();
+        }
+
+        // TopMost alone keeps the dialog above other windows but doesn't give it actual
+        // input/activation focus, which is the whole point when the user's likely tabbed into a
+        // game to physically move the controller and might not glance back at this window on
+        // their own between steps.
+        private void RaiseToForeground() {
+            if (!Visible)
+                return;
+            Activate();
+            BringToFront();
         }
     }
 }

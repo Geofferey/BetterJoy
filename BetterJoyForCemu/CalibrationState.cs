@@ -18,6 +18,14 @@ namespace BetterJoyForCemu {
         // scoping admission to one specific controller makes that restriction unnecessary.
         public static Joycon CalibratingController = null;
 
+        // Names the controller a calibration Start/Done prompt is currently showing for, so
+        // Joycon.DoThingsWithButtons (running on that controller's own Poll thread) knows a face
+        // button press right now means "confirm this prompt" rather than nothing. Set by
+        // MainForm/HeadlessJoyconHost whenever they show a prompt, cleared by whichever one
+        // actually acts on it (mouse click or button press - see each host's confirm handler) so
+        // a stray press after the prompt's already been dismissed does nothing.
+        public static Joycon PendingConfirmController = null;
+
         public static List<int> XG = new List<int>(), YG = new List<int>(), ZG = new List<int>();
         public static List<int> XA = new List<int>(), YA = new List<int>(), ZA = new List<int>();
         public static List<KeyValuePair<string, float[]>> CaliData = new List<KeyValuePair<string, float[]>> {

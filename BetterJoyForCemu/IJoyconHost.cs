@@ -16,6 +16,12 @@ namespace BetterJoyForCemu {
         void NotifyLowBattery(Joycon joycon);
         void UpdateBatteryColor(Joycon joycon);
 
+        // Called from the controller's own Poll thread (see Joycon.DoThingsWithButtons) when a
+        // face button is pressed while CalibrationState.PendingConfirmController names this exact
+        // controller - lets the user confirm a calibration Start/Done prompt from the controller
+        // itself instead of reaching for the mouse. A no-op whenever nothing is actually pending.
+        void HandleCalibrationConfirm(Joycon joycon);
+
         // Keyboard/mouse injection for remap (SL/SR/Capture -> key/mouse bind) and gyro-mouse.
         // Codes are WindowsInput.Events.KeyCode/ButtonCode cast to int, kept untyped here so this
         // interface doesn't need a WindowsInput dependency. Needs an interactive desktop to

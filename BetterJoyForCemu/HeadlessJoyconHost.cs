@@ -309,7 +309,7 @@ namespace BetterJoyForCemu {
                             break;
                         case ControlMessageType.CalibrationReady:
                             reader.ReadByte(); // padId - only one calibration can be in progress at a time, guarded by calibrationInProgress
-                            pendingCalibReady?.TrySetResult(true);
+                            CompleteCalibReady();
                             break;
                     }
                 }
@@ -390,6 +390,7 @@ namespace BetterJoyForCemu {
 
             try {
                 SendCalibrationStep(padId, 1, totalSteps, "Gyroscope", "Place the controller on a flat, still surface.", CalibStepUiMode.Start, 0);
+                CalibrationState.PendingConfirmController = jc;
                 await WaitForCalibReady();
 
                 CalibrationState.ClearSamples();
@@ -424,6 +425,7 @@ namespace BetterJoyForCemu {
                     // before the user starts moving are harmless, they just fall inside the
                     // eventual min/max instead of corrupting it.
                     SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Leave the {0} centered - don't touch it.", stepName.ToLower()), CalibStepUiMode.Start, 0);
+                    CalibrationState.PendingConfirmController = jc;
                     await WaitForCalibReady();
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Center;
                     await Task.Delay(1000);
@@ -431,6 +433,7 @@ namespace BetterJoyForCemu {
 
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
                     SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Now rotate the {0} in full circles out to its edges.", stepName.ToLower()), CalibStepUiMode.Done, 0);
+                    CalibrationState.PendingConfirmController = jc;
                     await WaitForCalibReady();
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
@@ -447,6 +450,7 @@ namespace BetterJoyForCemu {
                 CalibrationState.CalibratingController = null;
                 CalibrationState.StickCalibrating = false;
                 CalibrationState.StickCalibratingController = null;
+                CalibrationState.PendingConfirmController = null;
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
             } finally {
                 pendingCalibReady = null;
@@ -455,13 +459,32 @@ namespace BetterJoyForCemu {
         }
 
         private Task WaitForCalibReady() {
-            // RunContinuationsAsynchronously - TrySetResult below fires from the pipe's read
-            // loop thread (ControlReadLoop); without this the rest of StartCalibration's async
-            // continuation would run inline on that thread instead of the thread pool, delaying
-            // it from getting back to reading the next incoming message.
+            // RunContinuationsAsynchronously - TrySetResult below fires from either the pipe's
+            // read loop thread (ControlReadLoop) or a physical controller's own Poll thread (see
+            // HandleCalibrationConfirm); without this the rest of StartCalibration's async
+            // continuation would run inline on whichever one completed it, delaying that thread
+            // from getting back to its own work.
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             pendingCalibReady = tcs;
             return tcs.Task;
+        }
+
+        // Shared completion path for both an incoming CalibrationReady pipe message (a remote
+        // GUI's mouse click) and a physical confirm button press on the controller itself (see
+        // HandleCalibrationConfirm below) - whichever fires first is the one that counts.
+        private void CompleteCalibReady() {
+            CalibrationState.PendingConfirmController = null;
+            pendingCalibReady?.TrySetResult(true);
+        }
+
+        // IJoyconHost - called from the calibrating controller's own Poll thread (see Joycon.
+        // DoThingsWithButtons) when a face button is pressed while a Start/Done prompt is
+        // showing. No live GUI here to update directly (unlike MainForm's implementation) - just
+        // completing the same wait a CalibrationReady pipe message would have is enough; the
+        // async StartCalibration continuation does the rest, including pushing the next
+        // CalibrationStep to whatever remote GUI is connected.
+        public void HandleCalibrationConfirm(Joycon joycon) {
+            CompleteCalibReady();
         }
 
         private void SendCalibrationStep(int padId, int stepNumber, int totalSteps, string stepName, string instruction, CalibStepUiMode uiMode, int count) {

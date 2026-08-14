@@ -816,6 +816,19 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Called from the calibrating controller's own Poll thread (see Joycon.
+        // DoThingsWithButtons) - PendingConfirmController already guarantees this only fires
+        // while joycon is actually the one a prompt is showing for, but isRemoteMode/
+        // calibratingJoycon are double-checked since this is a live Joycon reference that only
+        // exists at all in local mode (remote mode has none - see HandleCalibrationConfirm on
+        // HeadlessJoyconHost instead, which is what actually receives this call there).
+        public void HandleCalibrationConfirm(Joycon joycon) {
+            this.Invoke(new MethodInvoker(delegate {
+                if (!isRemoteMode && calibrationInProgress && joycon == calibratingJoycon)
+                    OnCalibButtonClicked();
+            }));
+        }
+
         public void JoinOrSplitJoycon(Joycon v) {
             if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
                 bool succ = false;
@@ -1100,7 +1113,21 @@ namespace BetterJoyForCemu {
             calibPhase = phase;
             awaitingStart = true;
             calibDialog.SetInstruction(instruction);
+            ShowCalibStartPrompt();
+        }
+
+        // Wrap every prompt-showing call so CalibrationState.PendingConfirmController always
+        // matches whatever the dialog is actually asking for - lets Joycon.DoThingsWithButtons
+        // treat a face button on THIS controller as "confirm" while it's showing, without
+        // needing to track dialog state itself.
+        private void ShowCalibStartPrompt() {
+            CalibrationState.PendingConfirmController = calibratingJoycon;
             calibDialog.ShowStartPrompt();
+        }
+
+        private void ShowCalibDonePrompt() {
+            CalibrationState.PendingConfirmController = calibratingJoycon;
+            calibDialog.ShowDonePrompt();
         }
 
         private void btn_reassign_open_Click(object sender, EventArgs e) {
@@ -1111,8 +1138,13 @@ namespace BetterJoyForCemu {
         // The dialog has one button whose meaning depends on where we are: first click in a
         // phase starts it (begins sample admission, and for gyro also starts its countdown);
         // for the two stick phases, a second click (Done) is what actually ends it - there's no
-        // timer for those at all, the user decides when they're finished.
+        // timer for those at all, the user decides when they're finished. Shared entry point for
+        // both an actual mouse click on the dialog and a physical confirm button press (see
+        // HandleCalibrationConfirm) - clearing PendingConfirmController here, not at each
+        // prompt-hiding call site, means whichever trigger fires first is the one that counts.
         private void OnCalibButtonClicked() {
+            CalibrationState.PendingConfirmController = null;
+
             if (awaitingStart) {
                 awaitingStart = false;
                 StartPhase();
@@ -1147,11 +1179,6 @@ namespace BetterJoyForCemu {
                     countDown.Interval = 1000;
                     countDown.Tick += new EventHandler(StickCenterCaptureTick);
                     countDown.Enabled = true;
-                    break;
-
-                case CalibPhase.StickRange:
-                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
-                    calibDialog.ShowDonePrompt();
                     break;
             }
         }
@@ -1194,7 +1221,7 @@ namespace BetterJoyForCemu {
             calibPhase = CalibPhase.StickRange;
             calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex]).ToLower()));
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
-            calibDialog.ShowDonePrompt();
+            ShowCalibDonePrompt();
         }
 
         // Center auto-advances on its own short timer (StickCenterCaptureTick), so this is only
@@ -1239,6 +1266,7 @@ namespace BetterJoyForCemu {
             CalibrationState.CalibratingController = null;
             CalibrationState.StickCalibrating = false;
             CalibrationState.StickCalibratingController = null;
+            CalibrationState.PendingConfirmController = null;
             calibrationInProgress = false;
             calibratingJoycon = null;
             RestoreCalibrateIcon();
