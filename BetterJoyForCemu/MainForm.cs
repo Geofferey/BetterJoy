@@ -81,13 +81,32 @@ namespace BetterJoyForCemu {
 
                 var value = ConfigurationManager.AppSettings[myConfigs[i]];
                 Control childControl;
-                if (value == "true" || value == "false") {
+                if (myConfigs[i] == "GyroToJoyOrMouse") {
+                    // A free-text field for a fixed set of valid strings just invites typos that
+                    // silently do nothing (extraGyroFeature in Joycon.cs only ever recognizes
+                    // these four exact values) - DropDownList (not DropDown) so it can only ever
+                    // hold one of them, never arbitrary typed text.
+                    var combo = new ComboBox() { DropDownStyle = ComboBoxStyle.DropDownList, Size = childSize };
+                    combo.Items.AddRange(new object[] { "none", "joy_left", "joy_right", "mouse" });
+                    combo.SelectedItem = combo.Items.Contains(value) ? value : "none";
+                    combo.SelectedIndexChanged += cbBox_Changed;
+                    childControl = combo;
+                } else if (value == "true" || value == "false") {
+                    // MouseClick is correct here - a click on a checkbox already IS the new
+                    // value, nothing to wait for.
                     childControl = new CheckBox() { Checked = Boolean.Parse(value), Size = childSize };
+                    childControl.MouseClick += cbBox_Changed;
                 } else {
+                    // Leave, not MouseClick - a text field's new value only exists once the user
+                    // has actually finished typing it, not the instant they click into the box
+                    // (which fires with whatever text was already sitting there, before any of
+                    // the edit happens). MouseClick here meant typing a new value and tabbing/
+                    // clicking away never saved it at all - cbBox_Changed only ever saw the old
+                    // text, from that very first click.
                     childControl = new TextBox() { Text = value, Size = childSize };
+                    childControl.Leave += cbBox_Changed;
                 }
 
-                childControl.MouseClick += cbBox_Changed;
                 settingsTable.Controls.Add(childControl, 1, i);
             }
         }
@@ -912,6 +931,8 @@ namespace BetterJoyForCemu {
 
                 if (valCtl.GetType() == typeof(CheckBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((CheckBox)valCtl).Checked.ToString().ToLower();
+                } else if (valCtl.GetType() == typeof(ComboBox) && settings[KeyCtl] != null) {
+                    settings[KeyCtl].Value = ((ComboBox)valCtl).SelectedItem.ToString();
                 } else if (valCtl.GetType() == typeof(TextBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((TextBox)valCtl).Text.ToLower();
                 }
@@ -996,6 +1017,8 @@ namespace BetterJoyForCemu {
                 var settings = configFile.AppSettings.Settings;
                 if (valCtl.GetType() == typeof(CheckBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((CheckBox)valCtl).Checked.ToString().ToLower();
+                } else if (valCtl.GetType() == typeof(ComboBox) && settings[KeyCtl] != null) {
+                    settings[KeyCtl].Value = ((ComboBox)valCtl).SelectedItem.ToString();
                 } else if (valCtl.GetType() == typeof(TextBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((TextBox)valCtl).Text.ToLower();
                 }

@@ -18,6 +18,15 @@ namespace BetterJoyForCemu {
 
         private Control curAssignment;
 
+        // Controller buttons have no equivalent to WindowsInput.Capture.Global (there's no OS-
+        // level hook for "a button was pressed on this specific HID device") - the only way to
+        // detect a press is to poll the already-connected Joycons' own current button state
+        // ourselves. Only meaningful in local/hardware-owning mode - Program.mgr is null in
+        // remote mode (the service owns the hardware), so this silently does nothing there and
+        // the right-click list remains the only way to assign a controller button.
+        private Timer joyPoll;
+        private readonly Dictionary<Joycon, bool[]> joyPrevButtons = new Dictionary<Joycon, bool[]>();
+
         public Reassign() {
             InitializeComponent();
 
@@ -71,6 +80,44 @@ namespace BetterJoyForCemu {
             keyboard.KeyEvent += Keyboard_KeyEvent;
             mouse = WindowsInput.Capture.Global.MouseAsync();
             mouse.MouseEvent += Mouse_MouseEvent;
+
+            joyPoll = new Timer { Interval = 30 };
+            joyPoll.Tick += JoyPoll_Tick;
+            joyPoll.Start();
+        }
+
+        // Polls every connected Joycon's current button state and edge-detects a rising press
+        // ourselves (a freshly-seen Joycon's baseline is recorded without triggering, so a
+        // button already held before this dialog opened - or before that controller connected -
+        // never gets mistaken for a new press). Runs continuously, independent of curAssignment,
+        // same as the keyboard/mouse hooks only actually acting on a press while curAssignment
+        // is set.
+        private void JoyPoll_Tick(object sender, EventArgs e) {
+            if (Program.mgr == null)
+                return;
+
+            int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
+            foreach (Joycon jc in Program.mgr.j) {
+                if (!joyPrevButtons.TryGetValue(jc, out bool[] prev)) {
+                    prev = new bool[buttonCount];
+                    for (int bi = 0; bi < buttonCount; bi++)
+                        prev[bi] = jc.GetButton((Joycon.Button)bi);
+                    joyPrevButtons[jc] = prev;
+                    continue;
+                }
+
+                for (int bi = 0; bi < buttonCount; bi++) {
+                    bool now = jc.GetButton((Joycon.Button)bi);
+                    bool wasDown = prev[bi];
+                    prev[bi] = now;
+
+                    if (curAssignment != null && now && !wasDown) {
+                        Config.SetValue((string)curAssignment.Tag, "joy_" + bi);
+                        GetPrettyName(curAssignment);
+                        curAssignment = null;
+                    }
+                }
+            }
         }
 
         private void Mouse_MouseEvent(object sender, WindowsInput.Events.Sources.EventSourceEventArgs<WindowsInput.Events.Sources.MouseEvent> e) {
@@ -94,6 +141,8 @@ namespace BetterJoyForCemu {
         private void Reassign_FormClosing(object sender, FormClosingEventArgs e) {
             keyboard.Dispose();
             mouse.Dispose();
+            joyPoll.Stop();
+            joyPoll.Dispose();
         }
 
         private void AsyncPrettyName(Control c) {
