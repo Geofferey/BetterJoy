@@ -65,6 +65,9 @@ namespace BetterJoyForCemu {
 
         void CleanUp() { // removes dropped controllers from list
             List<Joycon> rem = new List<Joycon>();
+            List<Joycon> droppedNotify = new List<Joycon>();
+            List<Joycon> partnerNotify = new List<Joycon>();
+
             foreach (Joycon joycon in j) {
                 if (joycon.state == Joycon.state_.DROPPED) {
                     // Capture the pair partner (if any) before Detach/nulling below, so
@@ -72,13 +75,14 @@ namespace BetterJoyForCemu {
                     // the dropped Joycon's own slot, and/or the surviving partner's.
                     Joycon partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
 
-                    form.HandleJoyconDropped(joycon, partner);
-
                     if (joycon.other != null)
                         joycon.other.other = null; // The other of the other is the joycon itself
 
                     joycon.Detach(true);
                     rem.Add(joycon);
+
+                    droppedNotify.Add(joycon);
+                    partnerNotify.Add(partner);
 
                     form.AppendTextBox("Removed dropped controller. Can be reconnected.\r\n");
                 }
@@ -86,6 +90,16 @@ namespace BetterJoyForCemu {
 
             foreach (Joycon v in rem)
                 j.Remove(v);
+
+            // Notified only after removal is fully done (list + pairing), not before - MainForm's
+            // implementation doesn't care (it acts on the passed-in Joycon references directly,
+            // not by re-reading the controller list), but HeadlessJoyconHost's does: it rebuilds
+            // its status snapshot from the live list, and building that snapshot before the
+            // drop was actually applied meant a GUI connected to a running service never saw a
+            // disconnect at all until it reconnected (the next change - a different controller
+            // connecting - would finally push a snapshot that happened to already be missing it).
+            for (int i = 0; i < droppedNotify.Count; i++)
+                form.HandleJoyconDropped(droppedNotify[i], partnerNotify[i]);
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
