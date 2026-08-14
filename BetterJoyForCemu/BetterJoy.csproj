@@ -172,6 +172,8 @@
     <Compile Include="Reassign.Designer.cs">
       <DependentUpon>Reassign.cs</DependentUpon>
     </Compile>
+    <Compile Include="ServiceControlClient.cs" />
+    <Compile Include="ServiceControlProtocol.cs" />
     <Compile Include="SessionLauncher.cs" />
     <Compile Include="UpdServer.cs" />
   </ItemGroup>

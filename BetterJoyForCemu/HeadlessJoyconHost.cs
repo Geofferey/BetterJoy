@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace BetterJoyForCemu {
@@ -10,13 +13,18 @@ namespace BetterJoyForCemu {
     // logging goes to the Windows Event Log instead of a console TextBox. Keyboard/mouse
     // remap/gyro-mouse are forwarded over a named pipe to a session-launched helper process (see
     // InputHelper/SessionLauncher) since Session 0 itself has no desktop for WindowsInput's
-    // hooks/injection to attach to.
+    // hooks/injection to attach to. Also runs the service side of the GUI control pipe (see
+    // ServiceControlProtocol) so a GUI that has deferred hardware ownership here can still show
+    // live controller status and trigger rumble test/join-split/calibration.
     public class HeadlessJoyconHost : IJoyconHost {
         private const string EventSource = "BetterJoy";
 
         private readonly object pipeLock = new object();
         private NamedPipeServerStream pipe;
         private bool loggedNoHelperConnected;
+
+        private readonly object controlPipeLock = new object();
+        private NamedPipeServerStream controlPipe;
 
         public void AppendTextBox(string message) {
             try {
@@ -28,25 +36,75 @@ namespace BetterJoyForCemu {
             }
         }
 
-        public void AssignSlot(Joycon joycon) { }
-        public void CollapseJoinedPair(Joycon left, Joycon right) { }
-        public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) { }
-        public void UpdateBatteryColor(Joycon joycon) { }
+        public void AssignSlot(Joycon joycon) { BroadcastSnapshot(); }
+        public void CollapseJoinedPair(Joycon left, Joycon right) { BroadcastSnapshot(); }
+        public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) { BroadcastSnapshot(); }
+        public void UpdateBatteryColor(Joycon joycon) { BroadcastSnapshot(); }
 
         public void NotifyLowBattery(Joycon joycon) {
             AppendTextBox(String.Format("Controller {0} - low battery.", joycon.PadId));
         }
 
-        // Hardware stick-double-click join/split is a controller-slot UI feature (see
-        // MainForm.JoinOrSplitJoycon) not reimplemented for headless mode yet - log it once
-        // rather than silently doing nothing forever.
-        private bool loggedJoinSplitUnsupported = false;
-        public void JoinOrSplitJoycon(Joycon joycon) {
-            if (!loggedJoinSplitUnsupported) {
-                loggedJoinSplitUnsupported = true;
-                AppendTextBox("Joining/splitting Joycons via hardware stick double-click isn't supported when running as a service.");
+        // Mirrors MainForm.JoinOrSplitJoycon (MainForm.cs) minus the button/icon updates, which
+        // don't exist headless - used both for the hardware stick-double-click path (Joycon.cs
+        // calls this via IJoyconHost the same as GUI mode) and the remote JoinOrSplit command
+        // from a connected GUI (see JoinOrSplitByPadId below).
+        public void JoinOrSplitJoycon(Joycon v) {
+            if (v.other == null && !v.isPro) {
+                if (Program.mgr.j.Count == 1) {
+                    v.other = v; // self-pair - single joycon in vertical mode
+                } else {
+                    foreach (Joycon jc in Program.mgr.j) {
+                        if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
+                            v.other = jc;
+                            jc.other = v;
+
+                            if (v.out_xbox != null) {
+                                try { v.out_xbox.Disconnect(); } catch { }
+                            }
+                            if (v.out_ds4 != null) {
+                                try { v.out_ds4.Disconnect(); } catch { }
+                            }
+                            v.out_xbox = null;
+                            v.out_ds4 = null;
+                            break;
+                        }
+                    }
+                }
+            } else if (v.other != null && !v.isPro) {
+                ReenableViGEm(v);
+                ReenableViGEm(v.other);
+
+                v.other.other = null;
+                v.other = null;
+            }
+
+            BroadcastSnapshot();
+        }
+
+        private void ReenableViGEm(Joycon v) {
+            bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
+            bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
+            bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
+
+            if (showAsXInput && v.out_xbox == null) {
+                v.out_xbox = new Controller.OutputControllerXbox360();
+                if (toRumble)
+                    v.out_xbox.FeedbackReceived += v.ReceiveRumble;
+                v.out_xbox.Connect();
+            }
+
+            if (showAsDS4 && v.out_ds4 == null) {
+                v.out_ds4 = new Controller.OutputControllerDualShock4();
+                if (toRumble)
+                    v.out_ds4.FeedbackReceived += v.Ds4_FeedbackReceived;
+                v.out_ds4.Connect();
             }
         }
+
+        // ---------------------------------------------------------------------------------
+        // Input helper pipe (keyboard/mouse remap) - see InputHelper/SessionLauncher.
+        // ---------------------------------------------------------------------------------
 
         // Starts listening on a brand new named pipe for the next input helper instance to
         // connect to - BetterJoyService launches that helper (via SessionLauncher) right after
@@ -150,5 +208,214 @@ namespace BetterJoyForCemu {
         public void SimulateMoveTo(int x, int y) => SendMessage(InputMessageType.SimulateMoveTo, x, y);
         public void SimulateMoveBy(int dx, int dy) => SendMessage(InputMessageType.SimulateMoveBy, dx, dy);
         public void SimulateMoveToScreenCenter() => SendMessage(InputMessageType.SimulateMoveToScreenCenter);
+
+        // ---------------------------------------------------------------------------------
+        // GUI control pipe (live status + rumble test/join-split/calibration commands) - see
+        // ServiceControlProtocol. Unlike the input helper pipe above, this one is long-lived
+        // and reconnectable: a GUI may start/stop independently of the service's own lifetime,
+        // so this keeps accepting new connections for as long as the service runs.
+        // ---------------------------------------------------------------------------------
+
+        public void StartControlServer() {
+            AcceptNextControlConnection();
+        }
+
+        private void AcceptNextControlConnection() {
+            var newPipe = new NamedPipeServerStream(
+                ServiceControlIpc.PipeName,
+                PipeDirection.InOut,
+                NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous,
+                0,
+                0,
+                InputIpc.CreateCrossSessionPipeSecurity());
+
+            newPipe.BeginWaitForConnection(OnControlClientConnected, newPipe);
+        }
+
+        private void OnControlClientConnected(IAsyncResult result) {
+            var connectedPipe = (NamedPipeServerStream)result.AsyncState;
+            try {
+                connectedPipe.EndWaitForConnection(result);
+            } catch {
+                return; // service stopping - the pipe was disposed out from under the wait
+            }
+
+            lock (controlPipeLock) {
+                if (controlPipe != null) {
+                    try { controlPipe.Dispose(); } catch { }
+                }
+                controlPipe = connectedPipe;
+            }
+
+            AppendTextBox("GUI control connection established.");
+            BroadcastSnapshot();
+
+            var reader = new BinaryReader(connectedPipe);
+            Task.Run(() => ControlReadLoop(connectedPipe, reader));
+
+            // Keep listening immediately, independent of this connection's lifetime, so a GUI
+            // relaunch (or a second one, however unlikely given its own single-instance mutex)
+            // always finds the pipe accepting.
+            AcceptNextControlConnection();
+        }
+
+        private void ControlReadLoop(NamedPipeServerStream connectedPipe, BinaryReader reader) {
+            try {
+                while (connectedPipe.IsConnected) {
+                    var type = (ControlMessageType)reader.ReadByte();
+                    switch (type) {
+                        case ControlMessageType.RequestSnapshot:
+                            BroadcastSnapshot();
+                            break;
+                        case ControlMessageType.TestRumble:
+                            TestRumble(reader.ReadByte());
+                            break;
+                        case ControlMessageType.JoinOrSplit:
+                            JoinOrSplitByPadId(reader.ReadByte());
+                            break;
+                        case ControlMessageType.StartCalibration:
+                            StartCalibration(reader.ReadByte());
+                            break;
+                    }
+                }
+            } catch {
+                // GUI closed/disconnected - fine, a fresh accept-loop is already listening.
+            } finally {
+                AppendTextBox("GUI control connection closed.");
+            }
+        }
+
+        private void TestRumble(int padId) {
+            Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            if (jc == null)
+                return;
+
+            jc.SetRumble(160.0f, 320.0f, 1.0f);
+            Task.Delay(300).ContinueWith(_ => jc.SetRumble(160.0f, 320.0f, 0));
+        }
+
+        private void JoinOrSplitByPadId(int padId) {
+            Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            if (jc != null)
+                JoinOrSplitJoycon(jc);
+        }
+
+        // Mirrors MainForm's StartGetData/CalcData timing (calibration samples are gathered
+        // into the shared CalibrationState buffers for a fixed ~3s window) - the "keep it flat"
+        // pre-countdown is purely a GUI-local visual affordance, so it isn't reproduced here.
+        // CalibrationState is still process-global, matching the existing GUI-mode restriction
+        // that only one controller may be connected while calibrating.
+        private void StartCalibration(int padId) {
+            if (Program.mgr == null || Program.mgr.j.Count != 1 || Program.mgr.j.First().PadId != padId) {
+                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
+                return;
+            }
+
+            Joycon jc = Program.mgr.j.First();
+            SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
+
+            CalibrationState.ClearSamples();
+            CalibrationState.Calibrating = true;
+
+            Task.Delay(3000).ContinueWith(_ => {
+                CalibrationState.Calibrating = false;
+                CalibrationState.FinishCalibration(jc.serial_number);
+                jc.getActiveData();
+                SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));
+            });
+        }
+
+        private void BroadcastSnapshot() {
+            SendControlMessage(w => ServiceControlIpc.WriteSnapshot(w, BuildSnapshot()));
+        }
+
+        private List<ControllerRecord> BuildSnapshot() {
+            var records = new List<ControllerRecord>();
+            if (Program.mgr == null)
+                return records;
+
+            foreach (Joycon jc in Program.mgr.j) {
+                ControllerKind kind = jc.isPro ? ControllerKind.Pro
+                    : jc.isSnes ? ControllerKind.Snes
+                    : jc.is64 ? ControllerKind.N64
+                    : jc.isLeft ? ControllerKind.Left
+                    : ControllerKind.Right;
+
+                sbyte otherPadId = (jc.other != null && jc.other != jc) ? (sbyte)jc.other.PadId : (sbyte)-1;
+
+                records.Add(new ControllerRecord {
+                    PadId = (byte)jc.PadId,
+                    Kind = kind,
+                    Battery = (sbyte)jc.battery,
+                    OtherPadId = otherPadId,
+                });
+            }
+            return records;
+        }
+
+        private void SendControlMessage(Action<BinaryWriter> write) {
+            lock (controlPipeLock) {
+                if (controlPipe == null || !controlPipe.IsConnected)
+                    return;
+
+                try {
+                    var writer = new BinaryWriter(controlPipe);
+                    write(writer);
+                } catch {
+                    // best-effort - a mid-write disconnect just drops this one push
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------------------
+        // Shared config auto-reload - picks up settings/keybind/controller-list changes a GUI
+        // (or anything else) writes to the shared AppPaths.DataDir location, without needing
+        // to restart the service. See EntryPoint.RedirectConfigToAppData/AppPaths for why these
+        // files live where they do.
+        // ---------------------------------------------------------------------------------
+
+        private static readonly HashSet<string> WatchedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "settings", "BetterJoyForCemu.exe.config", "3rdPartyControllers", "BlacklistedControllers",
+        };
+
+        private FileSystemWatcher configWatcher;
+        private System.Timers.Timer reloadDebounceTimer;
+
+        public void StartConfigWatcher() {
+            reloadDebounceTimer = new System.Timers.Timer(500) { AutoReset = false };
+            reloadDebounceTimer.Elapsed += (sender, e) => ReloadSharedConfig();
+
+            configWatcher = new FileSystemWatcher(AppPaths.DataDir) {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+            };
+            configWatcher.Changed += OnConfigFileChanged;
+            configWatcher.Created += OnConfigFileChanged;
+            configWatcher.Renamed += OnConfigFileChanged;
+            configWatcher.EnableRaisingEvents = true;
+        }
+
+        private void OnConfigFileChanged(object sender, FileSystemEventArgs e) {
+            if (!WatchedFileNames.Contains(e.Name))
+                return;
+
+            // FileSystemWatcher reliably fires more than once per save (e.g. a write-then-
+            // rename pattern some editors/APIs use) - restart a short idle timer instead of
+            // reloading on every single event.
+            reloadDebounceTimer.Stop();
+            reloadDebounceTimer.Start();
+        }
+
+        private void ReloadSharedConfig() {
+            try {
+                Config.Init(CalibrationState.CaliData);
+                ConfigurationManager.RefreshSection("appSettings");
+                _3rdPartyControllers.LoadIntoProgramLists();
+                AppendTextBox("Reloaded shared configuration after a change.");
+            } catch (Exception ex) {
+                AppendTextBox("Failed to reload shared configuration: " + ex.Message);
+            }
+        }
     }
 }

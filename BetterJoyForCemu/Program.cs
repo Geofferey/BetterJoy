@@ -433,6 +433,12 @@ namespace BetterJoyForCemu {
         private static WindowsInput.Events.Sources.IMouseEventSource mouse;
 
         public static void Start() {
+            // Previously only ever called from MainForm_Load, so a Windows Service (which never
+            // constructs a MainForm) silently never loaded remap keybinds (capture/home/sl_*/
+            // sr_*/shake/reset_mouse/active_gyro) at all - every Config.Value(...) lookup for
+            // them returned "" under service mode. Moved here so both modes get it.
+            Config.Init(CalibrationState.CaliData);
+
             if (useHidHide) {
                 try {
                     // HidHide's config lives in a read/write-protected registry key (not file-based,

@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Reflection;
+using System.ServiceProcess;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -22,6 +23,14 @@ namespace BetterJoyForCemu {
         private Timer countDown;
         private int count;
         private Timer clickTimer;
+
+        // When a Windows Service already owns the hardware (see ServiceControlProtocol/
+        // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
+        // shows live status pushed over ServiceControlClient and forwards a handful of commands
+        // (rumble test/join-split/calibration) instead of acting on a live Joycon directly.
+        // Decided once in MainForm_Load; not re-evaluated mid-session.
+        private bool isRemoteMode = false;
+        private ServiceControlClient serviceClient;
 
         public enum NonOriginalController : int {
             Disabled = 0,
@@ -117,9 +126,25 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_Load(object sender, EventArgs e) {
-            Config.Init(CalibrationState.CaliData);
+            if (AppPaths.ServiceModeEnabled && IsBetterJoyServiceRunning()) {
+                serviceClient = new ServiceControlClient();
+                isRemoteMode = serviceClient.Connect();
+            }
 
-            Program.Start();
+            if (isRemoteMode) {
+                WireServiceClientEvents();
+
+                // Add Controllers/blacklist (_3rdPartyControllers dialog) reads/edits these two
+                // in-memory lists - normally populated by Program.Start()'s GUI branch, which
+                // never runs here. Load them the same way headless mode does, so the dialog
+                // isn't working from an empty list.
+                _3rdPartyControllers.LoadIntoProgramLists();
+
+                AppendTextBox("Connected to the BetterJoy service - it owns the controllers; this window shows live status only.\r\n");
+                serviceClient.RequestSnapshot();
+            } else {
+                Program.Start();
+            }
 
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
             if (!console.Visible) {
@@ -159,7 +184,11 @@ namespace BetterJoyForCemu {
             notifyIcon.Visible = false; // remove the tray icon immediately so no further tray messages can reach it
 
             try {
-                Program.Stop();
+                // In remote mode Program.Start() was never called - mgr/server are still null,
+                // so there's nothing of ours to tear down here; the service keeps running
+                // independently of this window closing, and the pipe closes with the process.
+                if (!isRemoteMode)
+                    Program.Stop();
             } catch { } finally {
                 Environment.Exit(0);
             }
@@ -216,6 +245,115 @@ namespace BetterJoyForCemu {
             WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
         }
 
+        private static bool IsBetterJoyServiceRunning() {
+            try {
+                using (var sc = new ServiceController("BetterJoy")) {
+                    return sc.Status == ServiceControllerStatus.Running;
+                }
+            } catch {
+                return false; // not installed, access denied, etc. - fall back to running locally
+            }
+        }
+
+        // All ServiceControlClient events fire from a background read thread - each handler
+        // marshals onto the UI thread itself (RenderSnapshot does its own Invoke check; the
+        // rest are simple enough to wrap inline here).
+        private void WireServiceClientEvents() {
+            serviceClient.SnapshotReceived += RenderSnapshot;
+
+            serviceClient.CalibrationStarted += padId => this.Invoke(new MethodInvoker(delegate {
+                console.Text = "Calibrating via service - hold the controller flat...";
+            }));
+
+            serviceClient.CalibrationComplete += padId => this.Invoke(new MethodInvoker(delegate {
+                console.Text += "\r\nCalibration completed!!!\r\n";
+                RestoreCalibrateIcon();
+            }));
+
+            serviceClient.CalibrationFailed += padId => this.Invoke(new MethodInvoker(delegate {
+                console.Text += "\r\nCalibration failed - only one controller may be connected while calibrating.\r\n";
+                RestoreCalibrateIcon();
+            }));
+
+            serviceClient.Disconnected += () => this.Invoke(new MethodInvoker(delegate {
+                AppendTextBox("Lost connection to the BetterJoy service.\r\n");
+            }));
+        }
+
+        // Full re-render from a snapshot rather than incremental diffing against previous state
+        // - simpler and self-healing, and snapshots only arrive when something actually changed
+        // (see HeadlessJoyconHost.BroadcastSnapshot), not continuously.
+        private void RenderSnapshot(List<ControllerRecord> records) {
+            if (InvokeRequired) {
+                this.Invoke(new Action<List<ControllerRecord>>(RenderSnapshot), new object[] { records });
+                return;
+            }
+
+            foreach (Button b in con) {
+                b.Tag = null;
+                b.BackColor = Color.FromArgb(0x00, SystemColors.Control);
+                b.BackgroundImage = Properties.Resources.cross;
+                SetEmptySlotTooltip(b);
+            }
+
+            var handled = new HashSet<int>();
+            int slotIndex = 0;
+
+            foreach (ControllerRecord record in records) {
+                if (handled.Contains(record.PadId) || slotIndex >= con.Count)
+                    continue;
+
+                Button button = con[slotIndex];
+                bool isPair = record.OtherPadId >= 0;
+
+                if (isPair) {
+                    button.BackgroundImage = ComposeJoinedIcon(button.Width, button.Height);
+                    SetConnectionTooltip(button, false);
+                    handled.Add((byte)record.OtherPadId);
+                } else {
+                    button.BackgroundImage = IconFor(record);
+                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro);
+                }
+
+                button.Tag = (int)record.PadId;
+                button.BackColor = record.Battery >= 0 ? Joycon.GetBatteryColor(record.Battery) : Color.FromArgb(0x00, SystemColors.Control);
+
+                // Mirrors AssignJoyconToSlot's loc-button wiring - unsubscribe first since this
+                // whole method reruns on every snapshot push, unlike AssignJoyconToSlot which
+                // only runs once per new connection.
+                Button locButton = loc[slotIndex];
+                locButton.Tag = button;
+                locButton.Click -= locBtnClickAsync;
+                locButton.Click += locBtnClickAsync;
+
+                handled.Add(record.PadId);
+                slotIndex++;
+            }
+        }
+
+        private Bitmap IconFor(ControllerRecord record) {
+            switch (record.Kind) {
+                case ControllerKind.Pro: return Properties.Resources.pro;
+                case ControllerKind.Snes: return Properties.Resources.snes;
+                case ControllerKind.N64: return Properties.Resources.ultra;
+                case ControllerKind.Left: return Properties.Resources.jc_left_s;
+                default: return Properties.Resources.jc_right_s;
+            }
+        }
+
+        private void StartRemoteCalibrate(Button button) {
+            if (!(button.Tag is int)) {
+                RestoreCalibrateIcon();
+                return;
+            }
+
+            int padId = (int)button.Tag;
+            console.Text = "Requesting calibration from service...";
+            serviceClient.StartCalibration(padId);
+            // calibrateIconButton keeps flashing until CalibrationComplete/Failed arrives (see
+            // WireServiceClientEvents) - not cleared immediately here, unlike local mode.
+        }
+
         bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
         bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
         bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
@@ -225,6 +363,12 @@ namespace BetterJoyForCemu {
 
             if (bb.Tag.GetType() == typeof(Button)) {
                 Button button = bb.Tag as Button;
+
+                if (isRemoteMode) {
+                    if (button.Tag is int)
+                        serviceClient.TestRumble((int)button.Tag);
+                    return;
+                }
 
                 if (button.Tag.GetType() == typeof(Joycon)) {
                     Joycon v = (Joycon)button.Tag;
@@ -244,6 +388,22 @@ namespace BetterJoyForCemu {
             if (button.Tag == null) {
                 if (e.Button == MouseButtons.Left)
                     btn_open3rdP_Click(sender, e);
+                return;
+            }
+
+            if (isRemoteMode) {
+                if (!(button.Tag is int))
+                    return;
+
+                if (e.Button == MouseButtons.Right) {
+                    serviceClient.JoinOrSplit((int)button.Tag);
+                } else if (e.Button == MouseButtons.Left) {
+                    if (allowCalibration) {
+                        HandlePossibleDoubleClick(button);
+                    } else {
+                        btn_reassign_open_Click(sender, e);
+                    }
+                }
                 return;
             }
 
@@ -276,7 +436,10 @@ namespace BetterJoyForCemu {
         private void HandlePossibleDoubleClick(Button button) {
             if (clickTimer.Enabled && calibrateIconButton == button) {
                 clickTimer.Stop();
-                StartCalibrate(button, EventArgs.Empty);
+                if (isRemoteMode)
+                    StartRemoteCalibrate(button);
+                else
+                    StartCalibrate(button, EventArgs.Empty);
             } else {
                 clickTimer.Stop();
                 RestoreCalibrateIcon();

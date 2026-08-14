@@ -22,6 +22,8 @@ namespace BetterJoyForCemu {
             Program.Start();
 
             LaunchInputHelper();
+            host.StartControlServer();
+            host.StartConfigWatcher();
         }
 
         // Program.Stop() already guards the specific failures we know about (e.g. disconnecting
