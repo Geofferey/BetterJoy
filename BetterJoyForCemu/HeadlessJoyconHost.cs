@@ -376,15 +376,23 @@ namespace BetterJoyForCemu {
 
             SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
 
-            // A plain Joycon offers one stick step, always "primary" data-wise regardless of
-            // which physical side it is (see Joycon.ProcessButtonsAndStick - only a Pro
-            // controller ever feeds secondary samples); a Pro controller offers both.
-            var stickSteps = new List<bool>();
+            // Target/Secondary mirror MainForm's CalibStep - a Pro controller's two sticks live
+            // on ONE Joycon object (distinguished by Secondary), but a joined pair's two sticks
+            // live on TWO SEPARATE Joycon objects, each needing its own calibration pass against
+            // that specific instance. Without this, only whichever half jc happens to be would
+            // ever actually get recalibrated - the partner's stick would silently stay untouched.
+            var stickSteps = new List<(Joycon Target, bool Secondary, string Label)>();
+            bool isPair = jc.other != null && jc.other != jc;
             if (jc.isPro) {
-                stickSteps.Add(false);
-                stickSteps.Add(true);
+                stickSteps.Add((jc, false, "Left Stick"));
+                stickSteps.Add((jc, true, "Right Stick"));
+            } else if (isPair) {
+                Joycon leftJc = jc.isLeft ? jc : jc.other;
+                Joycon rightJc = jc.isLeft ? jc.other : jc;
+                stickSteps.Add((leftJc, false, "Left Stick"));
+                stickSteps.Add((rightJc, false, "Right Stick"));
             } else {
-                stickSteps.Add(false);
+                stickSteps.Add((jc, false, jc.isLeft ? "Left Stick" : "Right Stick"));
             }
             int totalSteps = 1 + stickSteps.Count;
 
@@ -406,14 +414,13 @@ namespace BetterJoyForCemu {
                 jc.getActiveData();
 
                 for (int i = 0; i < stickSteps.Count; i++) {
-                    bool secondary = stickSteps[i];
-                    string stepName = jc.isPro
-                        ? (secondary ? "Right Stick" : "Left Stick")
-                        : (jc.isLeft ? "Left Stick" : "Right Stick");
+                    Joycon target = stickSteps[i].Target;
+                    bool secondary = stickSteps[i].Secondary;
+                    string stepName = stickSteps[i].Label;
                     int stepNumber = i + 2; // step 1 is always Gyro
 
                     CalibrationState.ClearStickSamples();
-                    CalibrationState.StickCalibratingController = jc;
+                    CalibrationState.StickCalibratingController = target;
                     CalibrationState.StickCalibrating = true;
                     CalibrationState.CurrentStickTarget = secondary ? CalibrationState.StickTarget.Secondary : CalibrationState.StickTarget.Primary;
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
@@ -425,7 +432,7 @@ namespace BetterJoyForCemu {
                     // before the user starts moving are harmless, they just fall inside the
                     // eventual min/max instead of corrupting it.
                     SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Leave the {0} centered - don't touch it.", stepName.ToLower()), CalibStepUiMode.Start, 0);
-                    CalibrationState.PendingConfirmController = jc;
+                    CalibrationState.PendingConfirmController = target;
                     await WaitForCalibReady();
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Center;
                     await Task.Delay(1000);
@@ -433,12 +440,12 @@ namespace BetterJoyForCemu {
 
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
                     SendCalibrationStep(padId, stepNumber, totalSteps, stepName, String.Format("Now rotate the {0} in full circles out to its edges.", stepName.ToLower()), CalibStepUiMode.Done, 0);
-                    CalibrationState.PendingConfirmController = jc;
+                    CalibrationState.PendingConfirmController = target;
                     await WaitForCalibReady();
                     CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
-                    CalibrationState.FinishStickCalibration(jc.serial_number, secondary);
-                    jc.getActiveStickData();
+                    CalibrationState.FinishStickCalibration(target.serial_number, secondary);
+                    target.getActiveStickData();
                 }
 
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationComplete, padId));

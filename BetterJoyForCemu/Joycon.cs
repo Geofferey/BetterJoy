@@ -782,12 +782,16 @@ namespace BetterJoyForCemu {
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
 
-        // A/B/X/Y exist as such only on a Pro controller or a joined pair (see
-        // ProcessButtonsAndStick) - a solo Joycon's 4 primary buttons live at the DPAD_* indices
-        // instead regardless of which physical side it is (they're only labeled a d-pad on the
-        // left one; the right one's are the same 4 buttons Nintendo prints as A/B/X/Y).
+        // A/B/X/Y only ever reflect THIS device's own buttons on a Pro controller. A solo
+        // Joycon's 4 primary buttons live at the DPAD_* indices instead (labeled a d-pad on the
+        // left one, the same 4 buttons Nintendo prints as A/B/X/Y on the right) - and critically,
+        // that's still true when joined: ProcessButtonsAndStick's buttons[A/B/X/Y] cross-
+        // reference on a joined pair pulls from the OTHER Joycon's DPAD_* to build one merged
+        // Pro-style layout for output, so it does NOT represent this specific physical device's
+        // own buttons. Checking DPAD_* here instead, unconditionally for every non-Pro case,
+        // is what actually stays correct for whichever single physical Joycon the caller means.
         private bool CalibrationConfirmPressed() {
-            if (isPro || (other != null && other != this))
+            if (isPro)
                 return buttons_down[(int)Button.A] || buttons_down[(int)Button.B] || buttons_down[(int)Button.X] || buttons_down[(int)Button.Y];
             return buttons_down[(int)Button.DPAD_UP] || buttons_down[(int)Button.DPAD_DOWN] || buttons_down[(int)Button.DPAD_LEFT] || buttons_down[(int)Button.DPAD_RIGHT];
         }

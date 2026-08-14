@@ -1023,7 +1023,18 @@ namespace BetterJoyForCemu {
         // since a plain Joycon only ever has one physical stick to offer a step for, while a
         // Pro controller offers both.
         private enum CalibStepKind { Gyro, LeftStick, RightStick }
-        private List<CalibStepKind> calibSteps;
+        // Target/Secondary are only meaningful for a stick step (unused/null-Target for Gyro,
+        // which always targets calibratingJoycon's own IMU regardless of pairing). Target exists
+        // because a Pro controller's two sticks live on ONE Joycon object (distinguished by
+        // Secondary), but a joined pair's two sticks live on TWO SEPARATE Joycon objects - each
+        // needs its own calibration pass against that specific instance, or only whichever half
+        // happened to be clicked would ever actually get recalibrated.
+        private struct CalibStep {
+            public CalibStepKind Kind;
+            public Joycon Target;
+            public bool Secondary;
+        }
+        private List<CalibStep> calibSteps;
         private int calibStepIndex;
 
         // Gyro is a fixed countdown (see CalibrationDialog) - the other two are open-ended,
@@ -1055,14 +1066,24 @@ namespace BetterJoyForCemu {
 
             calibrationInProgress = true;
 
-            calibSteps = new List<CalibStepKind> { CalibStepKind.Gyro };
+            calibSteps = new List<CalibStep> { new CalibStep { Kind = CalibStepKind.Gyro } };
+
+            bool isPair = calibratingJoycon.other != null && calibratingJoycon.other != calibratingJoycon;
             if (calibratingJoycon.isPro) {
-                calibSteps.Add(CalibStepKind.LeftStick);
-                calibSteps.Add(CalibStepKind.RightStick);
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
+            } else if (isPair) {
+                // A joined pair is two independent physical devices, not one device with two
+                // sticks the way a Pro controller is - each side's stick lives on its own Joycon
+                // object, so each gets its own step targeting that specific instance.
+                Joycon leftJc = calibratingJoycon.isLeft ? calibratingJoycon : calibratingJoycon.other;
+                Joycon rightJc = calibratingJoycon.isLeft ? calibratingJoycon.other : calibratingJoycon;
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = leftJc, Secondary = false });
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = rightJc, Secondary = false });
             } else if (calibratingJoycon.isLeft) {
-                calibSteps.Add(CalibStepKind.LeftStick);
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
             } else {
-                calibSteps.Add(CalibStepKind.RightStick);
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = false });
             }
             calibStepIndex = 0;
 
@@ -1083,29 +1104,33 @@ namespace BetterJoyForCemu {
             return "";
         }
 
+        // The controller a prompt is currently showing for - calibratingJoycon for Gyro (always
+        // its own IMU), but the current step's own Target for a stick phase, since a joined
+        // pair's two steps target two different physical Joycon objects (see CalibStep).
+        private Joycon CurrentPromptTarget() {
+            CalibStep step = calibSteps[calibStepIndex];
+            return step.Kind == CalibStepKind.Gyro ? calibratingJoycon : step.Target;
+        }
+
         // Shows the step's first phase instruction with a Start prompt - nothing begins until
         // the user clicks it (OnCalibButtonClicked), so they have as long as they need to
         // actually read the instruction and get into position.
         private void BeginCurrentStep() {
-            CalibStepKind step = calibSteps[calibStepIndex];
-            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step));
+            CalibStep step = calibSteps[calibStepIndex];
+            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step.Kind));
 
-            if (step == CalibStepKind.Gyro) {
+            if (step.Kind == CalibStepKind.Gyro) {
                 BeginPhase(CalibPhase.GyroCollect, "Place the controller on a flat, still surface.");
             } else {
                 CalibrationState.ClearStickSamples();
-                CalibrationState.StickCalibratingController = calibratingJoycon;
+                CalibrationState.StickCalibratingController = step.Target;
                 CalibrationState.StickCalibrating = true;
-                // Only a Pro controller ever has a genuine secondary stick - a solo Joycon's
-                // one physical stick is always "primary" data-wise regardless of which side
-                // this step is labeled for (see Joycon.ProcessButtonsAndStick, which only ever
-                // feeds secondary samples when isPro).
-                CalibrationState.CurrentStickTarget = (step == CalibStepKind.RightStick && calibratingJoycon.isPro)
+                CalibrationState.CurrentStickTarget = step.Secondary
                     ? CalibrationState.StickTarget.Secondary
                     : CalibrationState.StickTarget.Primary;
                 CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
-                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step).ToLower()));
+                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step.Kind).ToLower()));
             }
         }
 
@@ -1119,14 +1144,16 @@ namespace BetterJoyForCemu {
         // Wrap every prompt-showing call so CalibrationState.PendingConfirmController always
         // matches whatever the dialog is actually asking for - lets Joycon.DoThingsWithButtons
         // treat a face button on THIS controller as "confirm" while it's showing, without
-        // needing to track dialog state itself.
+        // needing to track dialog state itself. Uses CurrentPromptTarget, not calibratingJoycon
+        // directly - for a joined pair's second stick step, the prompt is asking about the
+        // PARTNER's stick, so the confirm button needs to be pressed on that physical Joycon.
         private void ShowCalibStartPrompt() {
-            CalibrationState.PendingConfirmController = calibratingJoycon;
+            CalibrationState.PendingConfirmController = CurrentPromptTarget();
             calibDialog.ShowStartPrompt();
         }
 
         private void ShowCalibDonePrompt() {
-            CalibrationState.PendingConfirmController = calibratingJoycon;
+            CalibrationState.PendingConfirmController = CurrentPromptTarget();
             calibDialog.ShowDonePrompt();
         }
 
@@ -1219,7 +1246,7 @@ namespace BetterJoyForCemu {
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
             calibPhase = CalibPhase.StickRange;
-            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex]).ToLower()));
+            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex].Kind).ToLower()));
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
             ShowCalibDonePrompt();
         }
@@ -1230,11 +1257,11 @@ namespace BetterJoyForCemu {
             calibDialog.HidePrompt();
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
-            bool secondary = CalibrationState.CurrentStickTarget == CalibrationState.StickTarget.Secondary;
+            CalibStep step = calibSteps[calibStepIndex];
             try {
-                CalibrationState.FinishStickCalibration(calibratingJoycon.serial_number, secondary);
-                calibratingJoycon.getActiveStickData();
-                this.console.Text += StepDisplayName(calibSteps[calibStepIndex]) + " calibration completed!!!" + "\r\n";
+                CalibrationState.FinishStickCalibration(step.Target.serial_number, step.Secondary);
+                step.Target.getActiveStickData();
+                this.console.Text += StepDisplayName(step.Kind) + " calibration completed!!!" + "\r\n";
                 AdvanceStep();
             } catch {
                 this.console.Text += "Stick calibration failed - was the controller disconnected?" + "\r\n";
