@@ -60,19 +60,28 @@ namespace BetterJoyForCemu {
                             v.other = jc;
                             jc.other = v;
 
-                            if (v.out_xbox != null) {
-                                try { v.out_xbox.Disconnect(); } catch { }
+                            // Disconnect whichever controller was created later - see Joycon.
+                            // virtualControllerSequence. The older one is the one most likely
+                            // already locked onto by a running game, so it's left untouched; the
+                            // newer one is safe to actually disconnect (matching a real unplug)
+                            // and recreate later on split via ReenableViGEm.
+                            Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
+                            if (loser.out_xbox != null) {
+                                try { loser.out_xbox.Disconnect(); } catch { }
+                                loser.out_xbox = null;
                             }
-                            if (v.out_ds4 != null) {
-                                try { v.out_ds4.Disconnect(); } catch { }
+                            if (loser.out_ds4 != null) {
+                                try { loser.out_ds4.Disconnect(); } catch { }
+                                loser.out_ds4 = null;
                             }
-                            v.out_xbox = null;
-                            v.out_ds4 = null;
                             break;
                         }
                     }
                 }
             } else if (v.other != null && !v.isPro) {
+                // Recreates whichever controller was actually disconnected on join (see above) -
+                // a no-op for whichever one was never touched, since ReenableViGEm only acts
+                // when out_xbox/out_ds4 is null.
                 ReenableViGEm(v);
                 ReenableViGEm(v.other);
 

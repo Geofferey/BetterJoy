@@ -764,14 +764,20 @@ namespace BetterJoyForCemu {
                             v.other = jc;
                             jc.other = v;
 
-                            if (v.out_xbox != null) {
-                                v.out_xbox.Disconnect();
-                                v.out_xbox = null;
+                            // Disconnect whichever controller was created later - see Joycon.
+                            // virtualControllerSequence - not just whichever you happened to
+                            // click. The older one is the one most likely already locked onto by
+                            // a running game, so it's left completely untouched; the newer one is
+                            // safe to actually disconnect (matching a real unplug - clean, no
+                            // leftover state) and recreate later on split via ReenableViGEm.
+                            Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
+                            if (loser.out_xbox != null) {
+                                loser.out_xbox.Disconnect();
+                                loser.out_xbox = null;
                             }
-
-                            if (v.out_ds4 != null) {
-                                v.out_ds4.Disconnect();
-                                v.out_ds4 = null;
+                            if (loser.out_ds4 != null) {
+                                loser.out_ds4.Disconnect();
+                                loser.out_ds4 = null;
                             }
 
                             CollapseJoinedPair(v.isLeft ? v : jc, v.isLeft ? jc : v);
@@ -787,6 +793,9 @@ namespace BetterJoyForCemu {
                         if (b.Tag == v)
                             b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
             } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
+                // Recreates whichever controller was actually disconnected on join (see above) -
+                // a no-op for whichever one was never touched, since ReenableViGEm only acts
+                // when out_xbox/out_ds4 is null.
                 ReenableViGEm(v);
                 ReenableViGEm(v.other);
 

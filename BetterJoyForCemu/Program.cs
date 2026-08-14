@@ -116,8 +116,28 @@ namespace BetterJoyForCemu {
                     // the dropped Joycon's own slot, and/or the surviving partner's.
                     Joycon partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
 
-                    if (joycon.other != null)
-                        joycon.other.other = null; // The other of the other is the joycon itself
+                    if (joycon.other != null) {
+                        Joycon survivor = joycon.other;
+                        survivor.other = null; // The other of the other is the joycon itself
+
+                        // The survivor needs its own controller back if the dropped half was the
+                        // one actively driving the pair's shared controller (see JoinOrSplitJoycon/
+                        // the auto-join block above, which disconnects whichever side loses the
+                        // join) - otherwise it's left solo with no virtual controller at all.
+                        // No-op if the survivor already has one (it was the active side).
+                        if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]) && survivor.out_xbox == null) {
+                            survivor.out_xbox = new Controller.OutputControllerXbox360();
+                            if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                                survivor.out_xbox.FeedbackReceived += survivor.ReceiveRumble;
+                            survivor.out_xbox.Connect();
+                        }
+                        if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]) && survivor.out_ds4 == null) {
+                            survivor.out_ds4 = new Controller.OutputControllerDualShock4();
+                            if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                                survivor.out_ds4.FeedbackReceived += survivor.Ds4_FeedbackReceived;
+                            survivor.out_ds4.Connect();
+                        }
+                    }
 
                     joycon.Detach(true);
                     rem.Add(joycon);
@@ -394,52 +414,18 @@ namespace BetterJoyForCemu {
                 ptr = enumerate.next;
             }
 
-            if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
-                Joycon temp = null;
-                foreach (Joycon v in j) {
-                    // Do not attach two controllers if they are either:
-                    // - Not a Joycon
-                    // - Already attached to another Joycon (that isn't itself)
-                    if (v.isPro || (v.other != null && v.other != v)) {
-                        continue;
-                    }
-
-                    // Otherwise, iterate through and find the Joycon with the lowest
-                    // id that has not been attached already (Does not include self)
-                    if (temp == null)
-                        temp = v;
-                    else if (temp.isLeft != v.isLeft && v.other == null) {
-                        temp.other = v;
-                        v.other = temp;
-
-                        if (temp.out_xbox != null) {
-                            try {
-                                temp.out_xbox.Disconnect();
-                            } catch (Exception) {
-                                // it wasn't connected in the first place, go figure
-                            }
-                        }
-                        if (temp.out_ds4 != null) {
-                            try {
-                                temp.out_ds4.Disconnect();
-                            } catch (Exception) {
-                                // it wasn't connected in the first place, go figure
-                            }
-                        }
-                        temp.out_xbox = null;
-                        temp.out_ds4 = null;
-
-                        Joycon left = temp.isLeft ? temp : v;
-                        Joycon right = temp.isLeft ? v : temp;
-                        form.CollapseJoinedPair(left, right);
-
-                        temp = null;    // repeat
-                    }
-                }
-            }
-
             HIDapi.hid_free_enumeration(top_ptr);
 
+            // Connect/attach every newly-found device BEFORE auto-join runs below. Auto-join's
+            // pairing (Joycon.other's setter) sends a player-LED subcommand immediately, which
+            // needs the physical controller to have already been through its handshake (Attach)
+            // to respond correctly. Pairing a controller that just connected this same pass (not
+            // yet attached) with one left over from an earlier pass (already attached) used to
+            // send that LED command before the fresh one was ready for it - silently dropped, or
+            // leaving its protocol state confused. Reliably reproduced: whichever Joycon happened
+            // to connect second kept showing its own solo player number instead of the pair's,
+            // and the pair's virtual controller didn't actually work in games afterward even
+            // though it looked fine in joy.cpl.
             bool on = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None).AppSettings.Settings["HomeLEDOn"].Value.ToLower() == "true";
             foreach (Joycon jc in j) { // Connect device straight away
                 if (jc.state == Joycon.state_.NOT_ATTACHED) {
@@ -460,6 +446,50 @@ namespace BetterJoyForCemu {
                     jc.Begin();
                     if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
                         jc.getActiveData();
+                    }
+                }
+            }
+
+            if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
+                Joycon temp = null;
+                foreach (Joycon v in j) {
+                    // Do not attach two controllers if they are either:
+                    // - Not a Joycon
+                    // - Already attached to another Joycon (that isn't itself)
+                    if (v.isPro || (v.other != null && v.other != v)) {
+                        continue;
+                    }
+
+                    // Otherwise, iterate through and find the Joycon with the lowest
+                    // id that has not been attached already (Does not include self)
+                    if (temp == null)
+                        temp = v;
+                    else if (temp.isLeft != v.isLeft && v.other == null) {
+                        temp.other = v;
+                        v.other = temp;
+
+                        // Disconnect whichever controller was created later - see Joycon.
+                        // virtualControllerSequence - not just whichever happened to be found
+                        // first in this iteration (usually but not guaranteed to be the older
+                        // one). Its controller was just Connect()ed moments ago by the "connect
+                        // device straight away" loop above, so this is a real disconnect, not a
+                        // no-op - matches a real unplug (clean, no leftover state); the other one
+                        // is left untouched as the pair's shared controller.
+                        Joycon loser = temp.virtualControllerSequence > v.virtualControllerSequence ? temp : v;
+                        if (loser.out_xbox != null) {
+                            try { loser.out_xbox.Disconnect(); } catch { }
+                            loser.out_xbox = null;
+                        }
+                        if (loser.out_ds4 != null) {
+                            try { loser.out_ds4.Disconnect(); } catch { }
+                            loser.out_ds4 = null;
+                        }
+
+                        Joycon left = temp.isLeft ? temp : v;
+                        Joycon right = temp.isLeft ? v : temp;
+                        form.CollapseJoinedPair(left, right);
+
+                        temp = null;    // repeat
                     }
                 }
             }

@@ -249,6 +249,18 @@ namespace BetterJoyForCemu {
         public OutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 
+        // Monotonic creation order, assigned once in the constructor - used to decide which half
+        // of a pair gets disconnected on join: whichever connected (and got its virtual
+        // controller created) FIRST is the one most likely to already be the controller a
+        // running game has locked onto, so joining always disconnects the newer one and keeps
+        // the older one active, regardless of which physical Joycon you click to initiate the
+        // join or which one a scan pass happens to enumerate first. Confirmed by testing:
+        // disconnecting/suppressing the wrong half left
+        // a game's already-locked-on slot silent while input went to a different slot it wasn't
+        // watching.
+        private static long nextVirtualControllerSequence = 0;
+        public readonly long virtualControllerSequence = System.Threading.Interlocked.Increment(ref nextVirtualControllerSequence);
+
         int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
