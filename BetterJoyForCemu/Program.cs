@@ -318,7 +318,7 @@ namespace BetterJoyForCemu {
                     try {
                         for (int n = 0; n < 6; n++)
                             mac[n] = byte.Parse(enumerate.serial_number.Substring(n * 2, 2), System.Globalization.NumberStyles.HexNumber);
-                    } catch (Exception e) {
+                    } catch (Exception) {
                         // could not parse mac address
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
@@ -348,14 +348,14 @@ namespace BetterJoyForCemu {
                         if (temp.out_xbox != null) {
                             try {
                                 temp.out_xbox.Disconnect();
-                            } catch (Exception e) {
+                            } catch (Exception) {
                                 // it wasn't connected in the first place, go figure
                             }
                         }
                         if (temp.out_ds4 != null) {
                             try {
                                 temp.out_ds4.Disconnect();
-                            } catch (Exception e) {
+                            } catch (Exception) {
                                 // it wasn't connected in the first place, go figure
                             }
                         }
@@ -383,7 +383,7 @@ namespace BetterJoyForCemu {
 
                     try {
                         jc.Attach();
-                    } catch (Exception e) {
+                    } catch (Exception) {
                         jc.state = Joycon.state_.DROPPED;
                         continue;
                     }
