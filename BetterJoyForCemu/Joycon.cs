@@ -1088,6 +1088,13 @@ namespace BetterJoyForCemu {
         // compound path such as the figure-eight acceptance test.
         private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
 
+        // A solo Joycon is held sideways and ExtractIMUValues rotates its gyro axes; a joined
+        // Joycon uses the pair/vertical basis instead. Keeping an orientation integrated in the
+        // old basis after other changes would mix two coordinate systems and make gyro-mouse
+        // jump or bend badly after join/split. This snapshot is read and updated only by the
+        // controller's poll thread in ProcessGyroMouseRawSample.
+        private Joycon gyroMouseOrientationPartner;
+
         // TEMPORARY diagnostic instrumentation for the figure-eight/circle drift investigation
         // (see CODE_REVIEW.md). Everything below is scoped to the CURRENT interval only (reset
         // after every write) rather than a lifetime running average - a lifetime average is too
@@ -1287,6 +1294,12 @@ namespace BetterJoyForCemu {
         // from a different cause, and would plausibly cycle with motion intensity (queue fills
         // during a burst, drains during a lull) rather than being constant.
         private void ProcessGyroMouseRawSample(bool flushToMouse) {
+            Joycon currentPartner = other;
+            if (!Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner)) {
+                ResetGyroMouseMotionState();
+                gyroMouseOrientationPartner = currentPartner;
+            }
+
             if (UseFilteredIMU || extraGyroFeature != "mouse") {
                 ResetGyroMouseMotionState();
                 return;
