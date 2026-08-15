@@ -1,10 +1,13 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Numerics;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using BetterJoyForCemu.Controller;
@@ -839,6 +842,12 @@ namespace BetterJoyForCemu {
 
         string extraGyroFeature = ConfigurationManager.AppSettings["GyroToJoyOrMouse"];
         bool UseFilteredIMU = Boolean.Parse(ConfigurationManager.AppSettings["UseFilteredIMU"]);
+        // TEMPORARY, for the figure-eight drift investigation (see CODE_REVIEW.md) - off by
+        // default since the logging itself (file I/O every ~150ms while gyro-mouse is active) is
+        // its own source of timing interference, exactly the kind of thing this investigation has
+        // spent most of its effort chasing out of the real path. Only turn on while deliberately
+        // capturing a test.
+        bool GyroMouseDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDebugLogging"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
@@ -1041,8 +1050,10 @@ namespace BetterJoyForCemu {
                 string resetMouseVal = Config.Value("reset_mouse");
                 if (resetMouseVal != "0") {
                     bool resetMouseHeld = IsComboHeld(resetMouseVal);
-                    if (resetMouseHeld && !prevResetMouseComboHeld)
+                    if (resetMouseHeld && !prevResetMouseComboHeld) {
                         form.SimulateMoveToScreenCenter();
+                        LogGyroMouseDiagnosticMarker("RESET");
+                    }
                     prevResetMouseComboHeld = resetMouseHeld;
                 }
             }
@@ -1069,6 +1080,194 @@ namespace BetterJoyForCemu {
         // more samples rather than lost.
         private float pendingMouseDx, pendingMouseDy;
 
+        // Last accelerometer-derived roll angle (radians) trusted enough to use for roll
+        // compensation - see the gating in ProcessGyroMouseRawSample. Starts at 0 (level/neutral)
+        // rather than uninitialized, since a controller could conceivably start out under
+        // sustained acceleration before ever reporting a trustworthy reading.
+        private float lastTrustedRollRad;
+
+        // TEMPORARY diagnostic instrumentation for the figure-eight/circle drift investigation
+        // (see CODE_REVIEW.md). Everything below is scoped to the CURRENT interval only (reset
+        // after every write) rather than a lifetime running average - a lifetime average is too
+        // smoothed out to see what's actually happening moment to moment. Interval length matches
+        // the report/write cadence: short enough (150ms) to see shape within a single loop, long
+        // enough that the file stays readable. Remove once the investigation concludes.
+        //
+        // Review-flagged fix: File.AppendAllText used to be called directly from here, i.e. on a
+        // Joycon's own poll thread, roughly every 150ms - synchronous file I/O on the exact path
+        // whose timing this investigation cares about, capable of distorting the jank/burstiness
+        // being measured. Formatted lines are now only ever enqueued (cheap, no I/O) here; a
+        // dedicated background thread (DiagLogWriterLoop) drains the queue and does the actual
+        // write, off this path entirely.
+        private const double DiagLogIntervalSeconds = 0.15;
+        private static readonly ConcurrentQueue<string> diagLogQueue = new ConcurrentQueue<string>();
+        private static bool diagLogWriterStarted;
+
+        private long diagIntervalDx, diagIntervalDy, diagIntervalSampleCount;
+        private long diagIntervalPositiveCount, diagIntervalNegativeCount;
+        private double diagIntervalSumGyrGY, diagIntervalSumRawGyrY;
+        private float diagIntervalMinGyrGY = float.MaxValue, diagIntervalMaxGyrGY = float.MinValue;
+        private long diagLastLogTimestamp;
+
+        // Raw yaw/roll rates (gyr_g.Z/X - gyr_g.Y=pitch is tracked above), the actual
+        // accelerometer-derived roll angle roll compensation uses (not a naive integral of
+        // gyr_g.X, which the review correctly pointed out isn't a reliable orientation during
+        // real 3D rotation), and the post-compensation yaw/pitch rates that actually reach
+        // sensitivity scaling - side by side with the raw ones, so a bad compensation transform
+        // (as opposed to a bad raw signal) is directly visible instead of inferred.
+        private double diagIntervalSumGyrGZ, diagIntervalSumGyrGX, diagIntervalSumRollDeg;
+        private double diagIntervalSumYawRate, diagIntervalSumPitchRate;
+        private float diagIntervalMinGyrGZ = float.MaxValue, diagIntervalMaxGyrGZ = float.MinValue;
+        private float diagIntervalMinGyrGX = float.MaxValue, diagIntervalMaxGyrGX = float.MinValue;
+        private float diagIntervalMinRollDeg = float.MaxValue, diagIntervalMaxRollDeg = float.MinValue;
+
+        // Auto-detected "controller genuinely at rest" periods, marked in the log so a stationary
+        // window doesn't have to be manually timestamped and reported separately - can't just
+        // threshold gyr_g.Y's raw magnitude (a biased reading won't sit near zero even at true
+        // rest, that's the whole bug), so this tracks how much gyr_g.Y VARIES over a running
+        // streak instead: a genuinely still controller holds a narrow band (whatever its bias
+        // happens to be), real wrist motion breaks out of a narrow band almost immediately.
+        private const float StillnessSpreadThresholdDegPerSec = 3.0f;
+        private const double StillnessMinDurationSeconds = 10.0;
+        private float stillStreakMinGyrGY = float.MaxValue, stillStreakMaxGyrGY = float.MinValue;
+        private long stillStreakStartTimestamp;
+        private bool stillStreakMarked;
+
+        // Started lazily on first use rather than from a constructor - matches how the rest of
+        // this diagnostic code only activates once GyroMouseDebugLogging/actual gyro-mouse use
+        // requires it, instead of running for every Joycon regardless of whether it's ever used.
+        private static void EnsureDiagLogWriterStarted() {
+            if (diagLogWriterStarted)
+                return;
+            diagLogWriterStarted = true;
+            new Thread(DiagLogWriterLoop) { IsBackground = true, Name = "GyroMouseDiagLogWriter" }.Start();
+        }
+
+        private static void DiagLogWriterLoop() {
+            string logPath = Path.Combine(AppPaths.DataDir, "gyro_mouse_debug.log");
+            while (true) {
+                Thread.Sleep(500);
+                if (diagLogQueue.IsEmpty)
+                    continue;
+
+                var batch = new StringBuilder();
+                while (diagLogQueue.TryDequeue(out string line))
+                    batch.Append(line);
+
+                try {
+                    File.AppendAllText(logPath, batch.ToString());
+                } catch {
+                    // diagnostic only - never let logging itself take down gyro-mouse
+                }
+            }
+        }
+
+        // Called for every sub-sample - accumulates this interval's stats and runs the stillness
+        // streak check - and again whenever a flush actually injects movement (with the real
+        // dx/dy that were sent, 0/0 otherwise). Enqueues at most once per DiagLogIntervalSeconds.
+        private void RecordGyroMouseDiagnosticSample(int dx, int dy, float rollDeg, float yawRate, float pitchRate) {
+            if (!GyroMouseDebugLogging)
+                return;
+
+            EnsureDiagLogWriterStarted();
+
+            diagIntervalDx += dx;
+            diagIntervalDy += dy;
+            diagIntervalSumGyrGY += gyr_g.Y;
+            diagIntervalSumRawGyrY += gyr_r[1];
+            diagIntervalSampleCount++;
+            if (gyr_g.Y >= 0) diagIntervalPositiveCount++; else diagIntervalNegativeCount++;
+            if (gyr_g.Y < diagIntervalMinGyrGY) diagIntervalMinGyrGY = gyr_g.Y;
+            if (gyr_g.Y > diagIntervalMaxGyrGY) diagIntervalMaxGyrGY = gyr_g.Y;
+
+            diagIntervalSumGyrGZ += gyr_g.Z;
+            if (gyr_g.Z < diagIntervalMinGyrGZ) diagIntervalMinGyrGZ = gyr_g.Z;
+            if (gyr_g.Z > diagIntervalMaxGyrGZ) diagIntervalMaxGyrGZ = gyr_g.Z;
+
+            diagIntervalSumGyrGX += gyr_g.X;
+            if (gyr_g.X < diagIntervalMinGyrGX) diagIntervalMinGyrGX = gyr_g.X;
+            if (gyr_g.X > diagIntervalMaxGyrGX) diagIntervalMaxGyrGX = gyr_g.X;
+
+            diagIntervalSumRollDeg += rollDeg;
+            if (rollDeg < diagIntervalMinRollDeg) diagIntervalMinRollDeg = rollDeg;
+            if (rollDeg > diagIntervalMaxRollDeg) diagIntervalMaxRollDeg = rollDeg;
+
+            diagIntervalSumYawRate += yawRate;
+            diagIntervalSumPitchRate += pitchRate;
+
+            UpdateStillnessStreak();
+
+            long now = Stopwatch.GetTimestamp();
+            if (diagLastLogTimestamp != 0 && (now - diagLastLogTimestamp) / (double)Stopwatch.Frequency < DiagLogIntervalSeconds)
+                return;
+            diagLastLogTimestamp = now;
+
+            bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
+            float neutralValue = allowCalibration ? activeData[1] : gyr_neutral[1];
+
+            string line = string.Format(
+                "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(accel): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  compensated: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}\r\n",
+                DateTime.Now,
+                diagIntervalSumGyrGY / diagIntervalSampleCount, diagIntervalMinGyrGY, diagIntervalMaxGyrGY,
+                diagIntervalPositiveCount, diagIntervalNegativeCount,
+                diagIntervalSumGyrGZ / diagIntervalSampleCount, diagIntervalMinGyrGZ, diagIntervalMaxGyrGZ,
+                diagIntervalSumGyrGX / diagIntervalSampleCount, diagIntervalMinGyrGX, diagIntervalMaxGyrGX,
+                diagIntervalSumRollDeg / diagIntervalSampleCount, diagIntervalMinRollDeg, diagIntervalMaxRollDeg,
+                diagIntervalSumYawRate / diagIntervalSampleCount, diagIntervalSumPitchRate / diagIntervalSampleCount,
+                diagIntervalSumRawGyrY / diagIntervalSampleCount,
+                allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
+                diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
+            diagLogQueue.Enqueue(line);
+
+            diagIntervalDx = 0; diagIntervalDy = 0; diagIntervalSampleCount = 0;
+            diagIntervalPositiveCount = 0; diagIntervalNegativeCount = 0;
+            diagIntervalSumGyrGY = 0; diagIntervalSumRawGyrY = 0;
+            diagIntervalMinGyrGY = float.MaxValue; diagIntervalMaxGyrGY = float.MinValue;
+            diagIntervalSumGyrGZ = 0; diagIntervalSumGyrGX = 0; diagIntervalSumRollDeg = 0;
+            diagIntervalSumYawRate = 0; diagIntervalSumPitchRate = 0;
+            diagIntervalMinGyrGZ = float.MaxValue; diagIntervalMaxGyrGZ = float.MinValue;
+            diagIntervalMinGyrGX = float.MaxValue; diagIntervalMaxGyrGX = float.MinValue;
+            diagIntervalMinRollDeg = float.MaxValue; diagIntervalMaxRollDeg = float.MinValue;
+        }
+
+        private void UpdateStillnessStreak() {
+            float candidateMin = Math.Min(stillStreakMinGyrGY, gyr_g.Y);
+            float candidateMax = Math.Max(stillStreakMaxGyrGY, gyr_g.Y);
+
+            if (candidateMax - candidateMin > StillnessSpreadThresholdDegPerSec) {
+                if (stillStreakMarked)
+                    LogGyroMouseDiagnosticMarker("STATIONARY END");
+
+                stillStreakMinGyrGY = gyr_g.Y;
+                stillStreakMaxGyrGY = gyr_g.Y;
+                stillStreakStartTimestamp = Stopwatch.GetTimestamp();
+                stillStreakMarked = false;
+                return;
+            }
+
+            stillStreakMinGyrGY = candidateMin;
+            stillStreakMaxGyrGY = candidateMax;
+
+            if (!stillStreakMarked) {
+                double elapsed = (Stopwatch.GetTimestamp() - stillStreakStartTimestamp) / (double)Stopwatch.Frequency;
+                if (elapsed >= StillnessMinDurationSeconds) {
+                    LogGyroMouseDiagnosticMarker(string.Format("STATIONARY START (held within {0}deg/s band for {1:F1}s so far)", StillnessSpreadThresholdDegPerSec, elapsed));
+                    stillStreakMarked = true;
+                }
+            }
+        }
+
+        // Marks a single instant in the log - reset_mouse actually firing, or an auto-detected
+        // stillness streak starting/ending - so the regular interval lines above can be lined up
+        // against it. TEMPORARY, same as RecordGyroMouseDiagnosticSample.
+        private void LogGyroMouseDiagnosticMarker(string label) {
+            if (!GyroMouseDebugLogging)
+                return;
+
+            EnsureDiagLogWriterStarted();
+            diagLogQueue.Enqueue(string.Format("{0:HH:mm:ss.fff}  *** {1} ***\r\n", DateTime.Now, label));
+        }
+
         // flushToMouse: accumulate every sub-sample (all 3, for accuracy - see the field comment
         // above), but only actually call SimulateMoveBy once per report (the last sub-sample),
         // matching the pre-fix call rate. Calling it 3x/report instead tripled the pipe-write
@@ -1082,21 +1281,68 @@ namespace BetterJoyForCemu {
                 return;
             if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft))))
                 return;
+
             if (!(Config.Value("active_gyro") == "0" || active_gyro))
                 return;
 
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
-            pendingMouseDx += GyroMouseSensitivityX * (gyr_g.Z * subSamplePeriod * degToRad);
-            pendingMouseDy += -(GyroMouseSensitivityY * (gyr_g.Y * subSamplePeriod * degToRad));
 
-            if (!flushToMouse)
+            float yawRate = gyr_g.Z;
+            float pitchRate = gyr_g.Y;
+
+            // Roll compensation: the figure-eight drift investigation (see CODE_REVIEW.md) ruled
+            // out gyro bias with a genuine stationary-controller baseline (rock-steady near zero),
+            // then found large, sustained roll swings present specifically during active motion
+            // and absent at rest - matching exactly where the drift does and doesn't happen. The
+            // raw path was mapping controller-LOCAL yaw/pitch straight to screen X/Y with no
+            // regard for how the controller is currently rolled, so a figure-eight's natural
+            // wrist roll leaks yaw into the pitch axis. This rotates the (yaw, pitch) rate vector
+            // by the current roll angle (from the accelerometer - gravity-referenced, so it
+            // doesn't drift the way integrating gyr_g.X over time would) to undo that leak before
+            // it reaches sensitivity scaling. The negation here is confirmed correct against real
+            // hardware (an un-negated version was tested first and made no difference; negated
+            // was a dramatic improvement) - not an arbitrary sign choice.
+            //
+            // The instantaneous accelerometer reading is only trustworthy when it's actually
+            // reading close to pure gravity (magnitude near 1g) - sustained motion like small
+            // clockwise circles keeps the hand under continuous centripetal acceleration, which
+            // contaminates that reading the whole time, not just as occasional noise. Confirmed on
+            // hardware: a tiny-circles test showed the raw instantaneous roll estimate drifting a
+            // sustained ~20-25 degrees over ~20 seconds of continuous motion, which - because this
+            // angle is what the rotation below is built from - dragged the compensated output
+            // increasingly off target the same way, disproportionately redirecting even small
+            // lateral input. Only update the trusted roll angle when the accelerometer magnitude
+            // is close enough to 1g to be believed; otherwise keep using the last trusted value.
+            const float AccTrustToleranceG = 0.2f;
+            float rollRad = -(float)Math.Atan2(acc_g.Y, acc_g.Z);
+            float accMagnitude = (float)Math.Sqrt(acc_g.X * acc_g.X + acc_g.Y * acc_g.Y + acc_g.Z * acc_g.Z);
+            if (Math.Abs(accMagnitude - 1.0f) <= AccTrustToleranceG)
+                lastTrustedRollRad = rollRad;
+
+            if (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseRollCompensation"])) {
+                float cosRoll = (float)Math.Cos(lastTrustedRollRad);
+                float sinRoll = (float)Math.Sin(lastTrustedRollRad);
+                yawRate = gyr_g.Z * cosRoll - gyr_g.Y * sinRoll;
+                pitchRate = gyr_g.Z * sinRoll + gyr_g.Y * cosRoll;
+            }
+
+            pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
+            pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
+
+            float rollDeg = lastTrustedRollRad * (180.0f / (float)Math.PI);
+
+            if (!flushToMouse) {
+                RecordGyroMouseDiagnosticSample(0, 0, rollDeg, yawRate, pitchRate);
                 return;
+            }
 
             int dx = (int)pendingMouseDx;
             int dy = (int)pendingMouseDy;
             pendingMouseDx -= dx;
             pendingMouseDy -= dy;
+
+            RecordGyroMouseDiagnosticSample(dx, dy, rollDeg, yawRate, pitchRate);
 
             if (dx != 0 || dy != 0)
                 form.SimulateMoveBy(dx, dy);

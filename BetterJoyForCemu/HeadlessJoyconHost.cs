@@ -270,12 +270,25 @@ namespace BetterJoyForCemu {
             outgoingMessages.TryAdd(new InputMessage { Type = type, A = a, B = b });
         }
 
+        // Hold/Release represent persistent state on the desktop (a key or mouse button actually
+        // staying down) rather than a one-off action - silently dropping a Release under queue
+        // pressure the way SendMessage's TryAdd does leaves whatever it was supposed to release
+        // stuck down indefinitely, which is a correctness bug, not just a missed input. Blocks
+        // (via BlockingCollection.Add) instead of dropping. Safe from deadlock even with no
+        // helper ever connected: the writer thread keeps draining outgoingMessages regardless of
+        // pipe state (WriteMessage no-ops but still consumes the item), so the queue always frees
+        // up - this only actually blocks the caller (a Joycon's poll thread) for the rare moment
+        // the queue is genuinely full, not routinely like the old synchronous pipe write did.
+        private void SendStatefulMessage(InputMessageType type, int a = 0, int b = 0) {
+            outgoingMessages.Add(new InputMessage { Type = type, A = a, B = b });
+        }
+
         public void SimulateKeyClick(int keyCode) => SendMessage(InputMessageType.SimulateKeyClick, keyCode);
-        public void SimulateKeyHold(int keyCode) => SendMessage(InputMessageType.SimulateKeyHold, keyCode);
-        public void SimulateKeyRelease(int keyCode) => SendMessage(InputMessageType.SimulateKeyRelease, keyCode);
+        public void SimulateKeyHold(int keyCode) => SendStatefulMessage(InputMessageType.SimulateKeyHold, keyCode);
+        public void SimulateKeyRelease(int keyCode) => SendStatefulMessage(InputMessageType.SimulateKeyRelease, keyCode);
         public void SimulateButtonClick(int buttonCode) => SendMessage(InputMessageType.SimulateButtonClick, buttonCode);
-        public void SimulateButtonHold(int buttonCode) => SendMessage(InputMessageType.SimulateButtonHold, buttonCode);
-        public void SimulateButtonRelease(int buttonCode) => SendMessage(InputMessageType.SimulateButtonRelease, buttonCode);
+        public void SimulateButtonHold(int buttonCode) => SendStatefulMessage(InputMessageType.SimulateButtonHold, buttonCode);
+        public void SimulateButtonRelease(int buttonCode) => SendStatefulMessage(InputMessageType.SimulateButtonRelease, buttonCode);
         public void SimulateMoveTo(int x, int y) => SendMessage(InputMessageType.SimulateMoveTo, x, y);
 
         public void SimulateMoveBy(int dx, int dy) {
