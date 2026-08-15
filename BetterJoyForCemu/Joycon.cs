@@ -851,6 +851,9 @@ namespace BetterJoyForCemu {
         bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
+        float GyroMouseTighteningThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseTighteningThreshold"]);
+        int GyroMouseSmoothingTimeMs = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingTimeMs"]);
+        float GyroMouseSmoothingThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingThreshold"]);
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
         float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
         float GyroStickReduction = float.Parse(ConfigurationManager.AppSettings["GyroStickReduction"]);
@@ -1048,12 +1051,10 @@ namespace BetterJoyForCemu {
                 // gyro data is in degrees/s
                 if (Config.Value("active_gyro") == "0" || active_gyro) {
                     // Mouse movement itself is applied per IMU sub-sample in
-                    // ProcessGyroMouseSample. Both filtered and raw modes are gyro-only here:
-                    // feeding Madgwick's accelerometer-corrected pitch into mouse Y made linear
-                    // hand movement act like tilt input, and subtracting its Euler angles could
-                    // jump at wrap/singularity boundaries. UseFilteredIMU now selects a low-pass
-                    // filter over the gyro rates before the same relative quaternion mapping;
-                    // it no longer changes the mouse into an absolute attitude controller.
+                    // ProcessGyroMouseSample. Both modes derive displacement only from angular
+                    // velocity. Filtered mode additionally uses a fused gravity reference to
+                    // blend yaw/roll in Player Space as the controller is tilted; acceleration
+                    // itself never becomes cursor displacement.
 
                     SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
                     SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right);
@@ -1081,18 +1082,14 @@ namespace BetterJoyForCemu {
         // more samples rather than lost.
         private float pendingMouseDx, pendingMouseDy;
 
-        // UseFilteredIMU used to route gyro-mouse through Madgwick's accelerometer-corrected
-        // absolute pitch/yaw. That is useful for estimating attitude while mostly stationary,
-        // but wrong for a relative pointer: ordinary linear hand acceleration is not gravity,
-        // yet the filter interprets it as tilt and directly moves mouse Y. Keep filtering in the
-        // gyro domain instead. A one-pole low-pass at 18 Hz removes the Joycons' high-frequency
-        // hand/sensor chatter with only ~9ms time constant, while leaving DC/slow deliberate
-        // rotation intact. Raw mode bypasses these fields entirely.
-        private const float GyroMouseFilterCutoffHz = 18.0f;
-        private Vector3 filteredGyroMouseRate;
-        private bool filteredGyroMouseRateInitialized;
+        // Canonical JoyShockLibrary/GamepadMotionHelpers Y-up sensor frame used only by gyro
+        // mouse. BetterJoy's public gyr_g/acc_g frame is retained untouched for UDP, gyro-stick,
+        // analog sliders and compatibility. A solo Joy-Con gets an additional proper sideways
+        // rotation, applied identically to these two vectors before fusion.
+        private Vector3 gyroMouseGyroRate;
+        private Vector3 gyroMouseAccel;
 
-        // A low-pass removes high-frequency noise but deliberately preserves DC, including the
+        // Smoothing removes high-frequency noise but deliberately preserves DC, including the
         // small temperature/unit-specific zero-rate bias that shows up as a steady cursor crawl
         // while a Joycon is sitting untouched. Learn that bias only from a sustained stillness
         // window. Accelerometer magnitude is used strictly as a confidence gate (near 1g means
@@ -1109,11 +1106,17 @@ namespace BetterJoyForCemu {
         private Vector3 gyroMouseBiasWindowMax;
         private int gyroMouseBiasWindowCount;
 
-        // Both modes integrate all three gyro axes as one quaternion before deriving cursor
-        // yaw/pitch; filtered mode simply smooths those rates first. Treating local Y and Z as
-        // permanently aligned screen axes is only a small-angle approximation and does not close
-        // under a compound path such as the figure-eight acceptance test.
+        // Raw mode retains the gyro-only quaternion mapper for A/B comparison. Filtered mode uses
+        // the proven Player Space approach from GamepadMotionHelpers: gravity influences which
+        // gyro axis means horizontal, but only gyro rate can produce movement.
         private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
+        private readonly GyroMousePlayerSpace gyroMousePlayerSpace = new GyroMousePlayerSpace();
+
+        // JoyShockMapper smooths the mapped 2D gyro rather than all three raw sensor axes. Full
+        // smoothing is used only for slow precision motion, blended away as speed approaches the
+        // configured threshold, so fast pointer movement remains responsive.
+        private readonly Queue<Vector2> gyroMouseSmoothSamples = new Queue<Vector2>();
+        private Vector2 gyroMouseSmoothSum;
 
         // A solo Joycon is held sideways and ExtractIMUValues rotates its gyro axes; a joined
         // Joycon uses the pair/vertical basis instead. Keeping an orientation integrated in the
@@ -1300,11 +1303,13 @@ namespace BetterJoyForCemu {
             diagLogQueue.Enqueue(string.Format("{0:HH:mm:ss.fff}  *** {1} ***\r\n", DateTime.Now, label));
         }
 
-        private void ResetGyroMouseMotionState() {
+        private void ResetGyroMouseMotionState(bool resetPlayerSpace = false) {
             pendingMouseDx = pendingMouseDy = 0.0f;
             gyroMouseOrientation.Reset();
-            filteredGyroMouseRate = Vector3.Zero;
-            filteredGyroMouseRateInitialized = false;
+            if (resetPlayerSpace)
+                gyroMousePlayerSpace.Reset();
+            gyroMouseSmoothSamples.Clear();
+            gyroMouseSmoothSum = Vector2.Zero;
         }
 
         private void ResetGyroMouseBiasWindow() {
@@ -1333,7 +1338,7 @@ namespace BetterJoyForCemu {
             float stillRateLimit = gyroMouseBiasInitialized
                 ? GyroMouseLearnedStillRateLimit
                 : GyroMouseInitialStillRateLimit;
-            float accelMagnitude = acc_g.Length();
+            float accelMagnitude = gyroMouseAccel.Length();
             bool stillCandidate = Math.Abs(accelMagnitude - 1.0f) <= GyroMouseStillAccelTolerance &&
                                   MaxAbsComponent(residual) <= stillRateLimit;
 
@@ -1385,7 +1390,10 @@ namespace BetterJoyForCemu {
         // orientation. This intentionally does not touch activeData/gyr_neutral/acc calibration:
         // recentering is a coordinate-frame change, while calibration estimates sensor offsets.
         private void RecenterGyro() {
-            ResetGyroMouseMotionState();
+            // Throw away the old gravity frame as well as pending mouse motion. The next IMU
+            // sub-sample seeds gravity directly from the pose held at the recenter edge. Bias is
+            // intentionally retained: orientation reset and zero-rate calibration are separate.
+            ResetGyroMouseMotionState(true);
             ResetGyroMouseBiasWindow();
             AHRS.Recenter();
             cur_rotation = AHRS.GetEulerAngles();
@@ -1400,7 +1408,7 @@ namespace BetterJoyForCemu {
             if (Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner))
                 return;
 
-            ResetGyroMouseMotionState();
+            ResetGyroMouseMotionState(true);
             ResetGyroMouseBiasEstimator();
             AHRS.Reset();
             gyroMouseOrientationPartner = currentPartner;
@@ -1411,6 +1419,62 @@ namespace BetterJoyForCemu {
                 form.SimulateCursorMoveBy(dx, dy);
             else
                 form.SimulateMoveBy(dx, dy);
+        }
+
+        private void UpdateCanonicalGyroMouseImu() {
+            // BetterJoy parses Nintendo packet axes as X=raw Z, Y=raw X, Z=raw Y and applies
+            // controller-side signs. This proper rotation converts that established frame to the
+            // same Y-up convention JoyShockLibrary feeds into GamepadMotionHelpers.
+            gyroMouseAccel = new Vector3(-acc_g.Y, acc_g.Z, -acc_g.X);
+            gyroMouseGyroRate = new Vector3(gyr_g.Y, -gyr_g.Z, -gyr_g.X);
+
+            if (other == null && !isPro) {
+                float oldAccelX = gyroMouseAccel.X;
+                float oldAccelZ = gyroMouseAccel.Z;
+                float oldGyroX = gyroMouseGyroRate.X;
+                float oldGyroZ = gyroMouseGyroRate.Z;
+
+                if (isLeft) {
+                    // +90 degrees around canonical up: (x,y,z) -> (z,y,-x).
+                    gyroMouseAccel.X = oldAccelZ;
+                    gyroMouseAccel.Z = -oldAccelX;
+                    gyroMouseGyroRate.X = oldGyroZ;
+                    gyroMouseGyroRate.Z = -oldGyroX;
+                } else {
+                    // -90 degrees around canonical up: (x,y,z) -> (-z,y,x).
+                    gyroMouseAccel.X = -oldAccelZ;
+                    gyroMouseAccel.Z = oldAccelX;
+                    gyroMouseGyroRate.X = -oldGyroZ;
+                    gyroMouseGyroRate.Z = oldGyroX;
+                }
+            }
+        }
+
+        private void SmoothGyroMouseRates(ref float yawRate, ref float pitchRate,
+                                          float samplePeriod) {
+            int maxSamples = Math.Max(1, (int)Math.Round(
+                GyroMouseSmoothingTimeMs / (samplePeriod * 1000.0f)));
+            Vector2 current = new Vector2(yawRate, pitchRate);
+            gyroMouseSmoothSamples.Enqueue(current);
+            gyroMouseSmoothSum += current;
+
+            while (gyroMouseSmoothSamples.Count > maxSamples)
+                gyroMouseSmoothSum -= gyroMouseSmoothSamples.Dequeue();
+
+            if (GyroMouseSmoothingThreshold <= 0.0f || gyroMouseSmoothSamples.Count <= 1)
+                return;
+
+            Vector2 average = gyroMouseSmoothSum / gyroMouseSmoothSamples.Count;
+            float speed = current.Length();
+            float lowerThreshold = GyroMouseSmoothingThreshold * 0.5f;
+            float unsmoothedFactor = GyroMouseSmoothingThreshold <= lowerThreshold
+                ? 1.0f
+                : Math.Max(0.0f, Math.Min(1.0f,
+                    (speed - lowerThreshold) /
+                    (GyroMouseSmoothingThreshold - lowerThreshold)));
+            Vector2 result = Vector2.Lerp(average, current, unsmoothedFactor);
+            yawRate = result.X;
+            pitchRate = result.Y;
         }
 
         // flushToMouse: integrate every sub-sample (all 3, for accuracy - see the field comment
@@ -1425,73 +1489,80 @@ namespace BetterJoyForCemu {
             EnsureGyroOrientationBasis();
 
             if (extraGyroFeature != "mouse") {
-                ResetGyroMouseMotionState();
+                ResetGyroMouseMotionState(true);
                 return;
             }
             if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
-                ResetGyroMouseMotionState();
+                ResetGyroMouseMotionState(true);
                 return;
             }
 
             // Keep learning the selected controller's zero-rate bias while gyro-mouse is
             // inactive, so activating it after the controller has been resting does not begin
             // with half a second of cursor crawl.
-            Vector3 mouseGyroRate = gyr_g;
+            Vector3 mouseGyroRate = UseFilteredIMU ? gyroMouseGyroRate : gyr_g;
             if (UseFilteredIMU)
                 mouseGyroRate = ApplyGyroMouseStationaryBias(mouseGyroRate);
-
-            if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
-                ResetGyroMouseMotionState();
-                return;
-            }
 
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
 
-            if (UseFilteredIMU) {
-                float alpha = 1.0f - (float)Math.Exp(-2.0f * Math.PI * GyroMouseFilterCutoffHz * subSamplePeriod);
-                if (!filteredGyroMouseRateInitialized) {
-                    filteredGyroMouseRate = mouseGyroRate;
-                    filteredGyroMouseRateInitialized = true;
-                } else {
-                    filteredGyroMouseRate += alpha * (mouseGyroRate - filteredGyroMouseRate);
-                }
-                mouseGyroRate = filteredGyroMouseRate;
-            } else {
-                // Do not preserve a stale filtered tail if settings are changed and this
-                // controller is later recreated in raw mode.
-                filteredGyroMouseRate = Vector3.Zero;
-                filteredGyroMouseRateInitialized = false;
+            // Keep the tilt reference current even while the activation button is released.
+            // Player Space fuses acceleration into the coordinate basis only; this call cannot
+            // add cursor displacement.
+            if (UseFilteredIMU)
+                gyroMousePlayerSpace.Update(mouseGyroRate, gyroMouseAccel, subSamplePeriod);
+
+            if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
+                pendingMouseDx = pendingMouseDy = 0.0f;
+                gyroMouseSmoothSamples.Clear();
+                gyroMouseSmoothSum = Vector2.Zero;
+                return;
             }
 
-            float yawRate = mouseGyroRate.Z;
-            float pitchRate = mouseGyroRate.Y;
+            float yawRate = UseFilteredIMU ? mouseGyroRate.Y : mouseGyroRate.Z;
+            float pitchRate = UseFilteredIMU ? mouseGyroRate.X : mouseGyroRate.Y;
             float rollRad = 0.0f;
 
-            // The old raw path treated controller-local Y and Z as fixed screen axes. A compound
-            // rotation invalidates that assumption: once the controller rolls, those axes no
-            // longer point along screen Y/X, so even a physically closed figure-eight can acquire
-            // a one-way cursor remainder. An accelerometer roll correction improved it, but hand
-            // acceleration can look like gravity and corrupt that angle while moving.
-            //
-            // Integrate the complete gyro quaternion instead, then take the change in its
-            // yaw/pitch coordinates. Those coordinates are state, not independent rate guesses,
-            // so returning to the starting orientation also returns their accumulated cursor
-            // displacement to zero (apart from actual sensor/integration error). The legacy path
-            // remains available behind the setting for an immediate hardware A/B comparison.
             if (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseRollCompensation"])) {
-                gyroMouseOrientation.MapSample(mouseGyroRate.X, mouseGyroRate.Y, mouseGyroRate.Z, subSamplePeriod,
-                                                out float deltaYawRad, out float deltaPitchRad,
-                                                out rollRad);
+                float deltaYawRad;
+                float deltaPitchRad;
+                if (UseFilteredIMU) {
+                    gyroMousePlayerSpace.Map(mouseGyroRate, out yawRate, out pitchRate,
+                                             out rollRad);
+
+                    SmoothGyroMouseRates(ref yawRate, ref pitchRate, subSamplePeriod);
+
+                    // JoyShockLibrary's reference mouse sample calls this "tightening": below a
+                    // small real-world angular speed, smoothly reduce gain instead of imposing a
+                    // deadzone or adding more low-pass lag. At and above the threshold the Player
+                    // Space result is unchanged.
+                    float inputSpeed = mouseGyroRate.Length();
+                    if (GyroMouseTighteningThreshold > 0.0f &&
+                        inputSpeed < GyroMouseTighteningThreshold) {
+                        float tightening = inputSpeed / GyroMouseTighteningThreshold;
+                        yawRate *= tightening;
+                        pitchRate *= tightening;
+                    }
+                    deltaYawRad = yawRate * subSamplePeriod * degToRad;
+                    deltaPitchRad = pitchRate * subSamplePeriod * degToRad;
+                } else {
+                    gyroMouseSmoothSamples.Clear();
+                    gyroMouseSmoothSum = Vector2.Zero;
+                    gyroMouseOrientation.MapSample(
+                        mouseGyroRate.X, mouseGyroRate.Y, mouseGyroRate.Z, subSamplePeriod,
+                        out deltaYawRad, out deltaPitchRad, out rollRad);
+
+                    // Keep diagnostics comparable to the direct-rate and Player Space paths.
+                    yawRate = deltaYawRad / (subSamplePeriod * degToRad);
+                    pitchRate = deltaPitchRad / (subSamplePeriod * degToRad);
+                }
                 pendingMouseDx += GyroMouseSensitivityX * deltaYawRad;
                 pendingMouseDy += -(GyroMouseSensitivityY * deltaPitchRad);
-
-                // Keep diagnostics comparable to the old raw-rate log even though the actual
-                // mapping above works in per-sample angular deltas.
-                yawRate = deltaYawRad / (subSamplePeriod * degToRad);
-                pitchRate = deltaPitchRad / (subSamplePeriod * degToRad);
             } else {
                 gyroMouseOrientation.Reset();
+                gyroMouseSmoothSamples.Clear();
+                gyroMouseSmoothSum = Vector2.Zero;
                 pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
                 pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
             }
@@ -1803,6 +1874,10 @@ namespace BetterJoyForCemu {
                         }
                     }
                 }
+
+                // Capture a canonical, physically consistent IMU frame before BetterJoy's
+                // legacy solo-controller transform mutates acc_g and gyr_g differently.
+                UpdateCanonicalGyroMouseImu();
 
                 if (other == null && !isPro) { // single joycon mode; Z do not swap, rest do
                     if (isLeft) {
