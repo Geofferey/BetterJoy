@@ -851,6 +851,8 @@ namespace BetterJoyForCemu {
         bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
+        const float GyroMouseDefaultScreenTraversalDegrees = 45.0f;
+        float GyroMouseScreenTraversalDegrees = float.Parse(ConfigurationManager.AppSettings["GyroMouseScreenTraversalDegrees"]);
         float GyroMouseTighteningThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseTighteningThreshold"]);
         int GyroMouseSmoothingTimeMs = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingTimeMs"]);
         float GyroMouseSmoothingThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingThreshold"]);
@@ -1574,8 +1576,20 @@ namespace BetterJoyForCemu {
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
 
+            // The legacy X/Y sensitivities define the established 45-degree reference gain.
+            // Expose the physical range as one intuitive control while preserving that tuned
+            // horizontal/vertical balance. Invalid non-positive values safely retain the
+            // established default rather than producing an inverted or infinite cursor gain.
+            float traversalDegrees = GyroMouseScreenTraversalDegrees;
+            if (traversalDegrees <= 0.0f || float.IsNaN(traversalDegrees) ||
+                float.IsInfinity(traversalDegrees))
+                traversalDegrees = GyroMouseDefaultScreenTraversalDegrees;
+            float traversalScale = GyroMouseDefaultScreenTraversalDegrees / traversalDegrees;
+            float mouseSensitivityX = GyroMouseSensitivityX * traversalScale;
+            float mouseSensitivityY = GyroMouseSensitivityY * traversalScale;
+
             // Keep the tilt reference current even while the activation button is released.
-            // Player Space fuses acceleration into the coordinate basis only; this call cannot
+            // World Space fuses acceleration into the coordinate basis only; this call cannot
             // add cursor displacement.
             if (UseFilteredIMU)
                 gyroMousePlayerSpace.Update(mouseGyroRate, mouseAccel, subSamplePeriod);
@@ -1624,14 +1638,14 @@ namespace BetterJoyForCemu {
                     yawRate = deltaYawRad / (subSamplePeriod * degToRad);
                     pitchRate = deltaPitchRad / (subSamplePeriod * degToRad);
                 }
-                pendingMouseDx += GyroMouseSensitivityX * deltaYawRad;
-                pendingMouseDy += -(GyroMouseSensitivityY * deltaPitchRad);
+                pendingMouseDx += mouseSensitivityX * deltaYawRad;
+                pendingMouseDy += -(mouseSensitivityY * deltaPitchRad);
             } else {
                 gyroMouseOrientation.Reset();
                 filteredGyroMouseRate = Vector2.Zero;
                 filteredGyroMouseRateInitialized = false;
-                pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
-                pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
+                pendingMouseDx += mouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
+                pendingMouseDy += -(mouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
             }
 
             float rollDeg = rollRad * (180.0f / (float)Math.PI);
