@@ -13,10 +13,6 @@ namespace BetterJoyForCemu {
     // mouse movement or amplify it beyond motion measured by the gyro.
     internal sealed class GyroMousePlayerSpace {
         private const float DegreesToRadians = (float)(Math.PI / 180.0);
-        // JoyShockMapper uses a 60-degree transition buffer for Player Turn. The speed cap below
-        // still prevents the gravity blend from inventing angular velocity.
-        private const float YawRelaxFactor = 2.0f;
-
         // GamepadMotionHelpers gravity-correction defaults (version 10).
         private const float ShakinessMinThreshold = 0.01f;
         private const float ShakinessMaxThreshold = 0.4f;
@@ -110,17 +106,27 @@ namespace BetterJoyForCemu {
                 ? Vector3.Normalize(gravity)
                 : new Vector3(0.0f, -1.0f, 0.0f);
 
-            // Canonical GamepadMotionHelpers/JoyShockLibrary frame: Y is up, X is local pitch,
-            // and the YZ plane contains local yaw and roll. Gravity chooses their horizontal
-            // blend; it never contributes cursor velocity of its own.
-            float worldYaw = gravityDirection.Y * gyroDegPerSec.Y +
-                             gravityDirection.Z * gyroDegPerSec.Z;
-            float yawPlaneSpeed = (float)Math.Sqrt(gyroDegPerSec.Y * gyroDegPerSec.Y +
-                                                   gyroDegPerSec.Z * gyroDegPerSec.Z);
-            float worldYawSign = worldYaw < 0.0f ? -1.0f : 1.0f;
-            yawRate = worldYawSign * Math.Min(Math.Abs(worldYaw) * YawRelaxFactor,
-                                              yawPlaneSpeed);
-            pitchRate = gyroDegPerSec.X;
+            // Full pointer/world space. Horizontal motion is rotation around gravity. Vertical
+            // motion is rotation around the instantaneous world-horizontal axis perpendicular to
+            // both gravity and the controller's local forward/roll axis (+Z). Unlike fixed local
+            // X pitch, this axis follows a wrist roll all the way through 180 degrees, preventing
+            // a closed figure-eight from accumulating one-way vertical motion.
+            yawRate = Vector3.Dot(gravityDirection, gyroDegPerSec);
+
+            float horizontalGravityLength = (float)Math.Sqrt(
+                gravityDirection.X * gravityDirection.X +
+                gravityDirection.Y * gravityDirection.Y);
+            if (horizontalGravityLength > 0.001f) {
+                Vector3 worldPitchAxis = new Vector3(
+                    -gravityDirection.Y / horizontalGravityLength,
+                    gravityDirection.X / horizontalGravityLength,
+                    0.0f);
+                pitchRate = Vector3.Dot(worldPitchAxis, gyroDegPerSec);
+            } else {
+                // Pointing almost vertically makes screen-relative pitch undefined. Fade to zero
+                // at the singularity rather than choosing a noisy arbitrary axis.
+                pitchRate = 0.0f;
+            }
 
             // Diagnostic only: zero while the canonical controller frame is flat.
             rollRadians = (float)Math.Atan2(gravityDirection.X, -gravityDirection.Y);
