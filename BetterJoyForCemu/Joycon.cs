@@ -1112,11 +1112,11 @@ namespace BetterJoyForCemu {
         private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
         private readonly GyroMousePlayerSpace gyroMousePlayerSpace = new GyroMousePlayerSpace();
 
-        // JoyShockMapper smooths the mapped 2D gyro rather than all three raw sensor axes. Full
-        // smoothing is used only for slow precision motion, blended away as speed approaches the
-        // configured threshold, so fast pointer movement remains responsive.
-        private readonly Queue<Vector2> gyroMouseSmoothSamples = new Queue<Vector2>();
-        private Vector2 gyroMouseSmoothSum;
+        // Smooth mapped 2D motion, not the raw 3D sensor. The filtered state is blended back
+        // toward the live rate as speed rises, preserving fine-motion stability without making
+        // fast turns feel delayed.
+        private Vector2 filteredGyroMouseRate;
+        private bool filteredGyroMouseRateInitialized;
 
         // A solo Joycon is held sideways and ExtractIMUValues rotates its gyro axes; a joined
         // Joycon uses the pair/vertical basis instead. Keeping an orientation integrated in the
@@ -1308,8 +1308,8 @@ namespace BetterJoyForCemu {
             gyroMouseOrientation.Reset();
             if (resetPlayerSpace)
                 gyroMousePlayerSpace.Reset();
-            gyroMouseSmoothSamples.Clear();
-            gyroMouseSmoothSum = Vector2.Zero;
+            filteredGyroMouseRate = Vector2.Zero;
+            filteredGyroMouseRateInitialized = false;
         }
 
         private void ResetGyroMouseBiasWindow() {
@@ -1452,19 +1452,22 @@ namespace BetterJoyForCemu {
 
         private void SmoothGyroMouseRates(ref float yawRate, ref float pitchRate,
                                           float samplePeriod) {
-            int maxSamples = Math.Max(1, (int)Math.Round(
-                GyroMouseSmoothingTimeMs / (samplePeriod * 1000.0f)));
             Vector2 current = new Vector2(yawRate, pitchRate);
-            gyroMouseSmoothSamples.Enqueue(current);
-            gyroMouseSmoothSum += current;
-
-            while (gyroMouseSmoothSamples.Count > maxSamples)
-                gyroMouseSmoothSum -= gyroMouseSmoothSamples.Dequeue();
-
-            if (GyroMouseSmoothingThreshold <= 0.0f || gyroMouseSmoothSamples.Count <= 1)
+            if (GyroMouseSmoothingTimeMs <= 0 || GyroMouseSmoothingThreshold <= 0.0f) {
+                filteredGyroMouseRate = current;
+                filteredGyroMouseRateInitialized = true;
                 return;
+            }
 
-            Vector2 average = gyroMouseSmoothSum / gyroMouseSmoothSamples.Count;
+            if (!filteredGyroMouseRateInitialized) {
+                filteredGyroMouseRate = current;
+                filteredGyroMouseRateInitialized = true;
+            } else {
+                float timeConstant = GyroMouseSmoothingTimeMs / 1000.0f;
+                float alpha = 1.0f - (float)Math.Exp(-samplePeriod / timeConstant);
+                filteredGyroMouseRate += alpha * (current - filteredGyroMouseRate);
+            }
+
             float speed = current.Length();
             float lowerThreshold = GyroMouseSmoothingThreshold * 0.5f;
             float unsmoothedFactor = GyroMouseSmoothingThreshold <= lowerThreshold
@@ -1472,7 +1475,15 @@ namespace BetterJoyForCemu {
                 : Math.Max(0.0f, Math.Min(1.0f,
                     (speed - lowerThreshold) /
                     (GyroMouseSmoothingThreshold - lowerThreshold)));
-            Vector2 result = Vector2.Lerp(average, current, unsmoothedFactor);
+
+            // Smoothstep avoids a perceptible gain corner as the filter releases. Once fully
+            // released, follow the live rate so old slow-motion history cannot create a tail
+            // when the user stops after a quick sweep.
+            unsmoothedFactor = unsmoothedFactor * unsmoothedFactor *
+                               (3.0f - 2.0f * unsmoothedFactor);
+            Vector2 result = Vector2.Lerp(filteredGyroMouseRate, current, unsmoothedFactor);
+            if (unsmoothedFactor >= 1.0f)
+                filteredGyroMouseRate = current;
             yawRate = result.X;
             pitchRate = result.Y;
         }
@@ -1515,8 +1526,8 @@ namespace BetterJoyForCemu {
 
             if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
                 pendingMouseDx = pendingMouseDy = 0.0f;
-                gyroMouseSmoothSamples.Clear();
-                gyroMouseSmoothSum = Vector2.Zero;
+                filteredGyroMouseRate = Vector2.Zero;
+                filteredGyroMouseRateInitialized = false;
                 return;
             }
 
@@ -1547,8 +1558,8 @@ namespace BetterJoyForCemu {
                     deltaYawRad = yawRate * subSamplePeriod * degToRad;
                     deltaPitchRad = pitchRate * subSamplePeriod * degToRad;
                 } else {
-                    gyroMouseSmoothSamples.Clear();
-                    gyroMouseSmoothSum = Vector2.Zero;
+                    filteredGyroMouseRate = Vector2.Zero;
+                    filteredGyroMouseRateInitialized = false;
                     gyroMouseOrientation.MapSample(
                         mouseGyroRate.X, mouseGyroRate.Y, mouseGyroRate.Z, subSamplePeriod,
                         out deltaYawRad, out deltaPitchRad, out rollRad);
@@ -1561,8 +1572,8 @@ namespace BetterJoyForCemu {
                 pendingMouseDy += -(GyroMouseSensitivityY * deltaPitchRad);
             } else {
                 gyroMouseOrientation.Reset();
-                gyroMouseSmoothSamples.Clear();
-                gyroMouseSmoothSum = Vector2.Zero;
+                filteredGyroMouseRate = Vector2.Zero;
+                filteredGyroMouseRateInitialized = false;
                 pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
                 pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
             }
