@@ -2,15 +2,15 @@ using System;
 using System.Numerics;
 
 namespace BetterJoyForCemu {
-    // Gravity tracking and "Player Space" gyro mapping adapted from Julian "Jibb" Smart's
+    // Gravity tracking and world-space gyro mapping adapted from Julian "Jibb" Smart's
     // MIT-licensed GamepadMotionHelpers reference implementation:
     // https://github.com/JibbSmart/GamepadMotionHelpers
     //
     // The important separation is that accelerometer fusion estimates which way is down, while
-    // only calibrated gyro angular velocity creates pointer motion. Player Space uses gravity
-    // loosely to blend the local yaw and roll axes, then caps the result at the actual angular
-    // speed. An imperfect gravity estimate can therefore change the blend, but cannot manufacture
-    // mouse movement or amplify it beyond motion measured by the gyro.
+    // only calibrated gyro angular velocity creates pointer motion. Gravity defines which gyro
+    // rotations are horizontal and vertical in the player's frame; it is never added to cursor
+    // velocity. An imperfect gravity estimate can therefore change the mapping, but cannot
+    // manufacture mouse movement while the gyro is stationary.
     internal sealed class GyroMousePlayerSpace {
         private const float DegreesToRadians = (float)(Math.PI / 180.0);
         // GamepadMotionHelpers gravity-correction defaults (version 10).
@@ -23,6 +23,10 @@ namespace BetterJoyForCemu {
         private const float GyroCorrectionMaxThreshold = 0.25f;
         private const float MinimumCorrectionSpeed = 0.01f;
         private const float ShortSteadinessHalfTime = 0.25f;
+        // GamepadMotionHelpers' default guard around the world-space pitch singularity. When the
+        // controller's local pitch axis is nearly vertical, projecting it onto the horizontal
+        // plane becomes ill-conditioned, so its contribution is faded instead of amplified.
+        private const float WorldPitchSideReductionThreshold = 0.125f;
 
         private Vector3 gravity;
         private Vector3 smoothedAccel;
@@ -106,25 +110,29 @@ namespace BetterJoyForCemu {
                 ? Vector3.Normalize(gravity)
                 : new Vector3(0.0f, -1.0f, 0.0f);
 
-            // Full pointer/world space. Horizontal motion is rotation around gravity. Vertical
-            // motion is rotation around the instantaneous world-horizontal axis perpendicular to
-            // both gravity and the controller's local forward/roll axis (+Z). Unlike fixed local
-            // X pitch, this axis follows a wrist roll all the way through 180 degrees, preventing
-            // a closed figure-eight from accumulating one-way vertical motion.
+            // Match GamepadMotionHelpers::CalculateWorldSpaceGyro. Horizontal motion is rotation
+            // around gravity. Vertical motion uses the controller's LOCAL pitch axis (+X)
+            // projected onto the plane perpendicular to gravity. This projection is important:
+            // choosing an arbitrary horizontal axis such as Z x gravity follows wrist roll past
+            // the side-on pose and can redirect compound roll/yaw motion into one-way mouse Y.
             yawRate = Vector3.Dot(gravityDirection, gyroDegPerSec);
 
-            float horizontalGravityLength = (float)Math.Sqrt(
-                gravityDirection.X * gravityDirection.X +
-                gravityDirection.Y * gravityDirection.Y);
-            if (horizontalGravityLength > 0.001f) {
-                Vector3 worldPitchAxis = new Vector3(
-                    -gravityDirection.Y / horizontalGravityLength,
-                    gravityDirection.X / horizontalGravityLength,
-                    0.0f);
-                pitchRate = Vector3.Dot(worldPitchAxis, gyroDegPerSec);
+            float gravityAlongLocalPitch = gravityDirection.X;
+            Vector3 worldPitchAxis = new Vector3(1.0f, 0.0f, 0.0f) -
+                                     gravityDirection * gravityAlongLocalPitch;
+            float pitchAxisLengthSquared = worldPitchAxis.LengthSquared();
+            if (pitchAxisLengthSquared > 0.0f) {
+                worldPitchAxis /= (float)Math.Sqrt(pitchAxisLengthSquared);
+
+                float flatness = Math.Abs(gravityDirection.Y);
+                float upness = Math.Abs(gravityDirection.Z);
+                float sideReduction = Clamp01(
+                    (Math.Max(flatness, upness) - WorldPitchSideReductionThreshold) /
+                    WorldPitchSideReductionThreshold);
+                pitchRate = sideReduction * Vector3.Dot(worldPitchAxis, gyroDegPerSec);
             } else {
-                // Pointing almost vertically makes screen-relative pitch undefined. Fade to zero
-                // at the singularity rather than choosing a noisy arbitrary axis.
+                // Local pitch is exactly parallel to gravity, so world-relative pitch is
+                // undefined. The side reduction above smoothly approaches this zero.
                 pitchRate = 0.0f;
             }
 
