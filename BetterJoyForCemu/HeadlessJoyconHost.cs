@@ -203,17 +203,19 @@ namespace BetterJoyForCemu {
         private readonly BlockingCollection<InputMessage> outgoingMessages =
             new BlockingCollection<InputMessage>(new ConcurrentQueue<InputMessage>(), 64);
 
-        // SimulateMoveBy deltas bypass outgoingMessages entirely and accumulate here instead - a
-        // dropped discrete event (a click, a key) is a one-off glitch, but a dropped MoveBy is
-        // displacement that's just gone, permanently, and gyro-mouse calls this at controller
-        // report rate. Coalescing means a writer thread that falls behind under sustained motion
-        // never loses movement, just delivers it in a bigger jump next flush instead of a bounded
-        // queue silently dropping the newest deltas - which is what a fixed-capacity queue was
-        // doing here before, and reads as exactly the "constrained, then releases" cycling
-        // reported (queue fills during a burst, drains during a lull).
+        // Relative and exact-cursor MoveBy deltas bypass outgoingMessages and accumulate here
+        // instead - a dropped discrete event (a click, a key) is a one-off glitch, but a dropped
+        // move is displacement that's just gone, permanently, and gyro-mouse calls this at
+        // controller report rate. Coalescing means a writer thread that falls behind under
+        // sustained motion never loses movement, just delivers it in a bigger jump next flush
+        // instead of a bounded queue silently dropping the newest deltas - which is what a
+        // fixed-capacity queue was doing here before, and reads as exactly the "constrained, then
+        // releases" cycling reported (queue fills during a burst, drains during a lull).
         private readonly object pendingMoveLock = new object();
         private int pendingMoveDx, pendingMoveDy;
         private bool hasPendingMove;
+        private int pendingCursorMoveDx, pendingCursorMoveDy;
+        private bool hasPendingCursorMove;
 
         public HeadlessJoyconHost() {
             new Thread(PipeWriterLoop) { IsBackground = true, Name = "InputPipeWriter" }.Start();
@@ -232,18 +234,29 @@ namespace BetterJoyForCemu {
         }
 
         private void FlushPendingMove() {
-            int dx, dy;
+            int dx, dy, cursorDx, cursorDy;
+            bool sendRelative, sendCursor;
             lock (pendingMoveLock) {
-                if (!hasPendingMove)
+                if (!hasPendingMove && !hasPendingCursorMove)
                     return;
                 dx = pendingMoveDx;
                 dy = pendingMoveDy;
+                cursorDx = pendingCursorMoveDx;
+                cursorDy = pendingCursorMoveDy;
+                sendRelative = hasPendingMove;
+                sendCursor = hasPendingCursorMove;
                 pendingMoveDx = 0;
                 pendingMoveDy = 0;
+                pendingCursorMoveDx = 0;
+                pendingCursorMoveDy = 0;
                 hasPendingMove = false;
+                hasPendingCursorMove = false;
             }
 
-            WriteMessage(new InputMessage { Type = InputMessageType.SimulateMoveBy, A = dx, B = dy });
+            if (sendRelative)
+                WriteMessage(new InputMessage { Type = InputMessageType.SimulateMoveBy, A = dx, B = dy });
+            if (sendCursor)
+                WriteMessage(new InputMessage { Type = InputMessageType.SimulateCursorMoveBy, A = cursorDx, B = cursorDy });
         }
 
         private void WriteMessage(InputMessage msg) {
@@ -296,6 +309,14 @@ namespace BetterJoyForCemu {
                 pendingMoveDx += dx;
                 pendingMoveDy += dy;
                 hasPendingMove = true;
+            }
+        }
+
+        public void SimulateCursorMoveBy(int dx, int dy) {
+            lock (pendingMoveLock) {
+                pendingCursorMoveDx += dx;
+                pendingCursorMoveDy += dy;
+                hasPendingCursorMove = true;
             }
         }
 

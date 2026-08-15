@@ -848,6 +848,7 @@ namespace BetterJoyForCemu {
         // spent most of its effort chasing out of the real path. Only turn on while deliberately
         // capturing a test.
         bool GyroMouseDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDebugLogging"]);
+        bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
@@ -1033,7 +1034,7 @@ namespace BetterJoyForCemu {
                     if (UseFilteredIMU) {
                         int dx = (int)(GyroMouseSensitivityX * (cur_rotation[1] - cur_rotation[4])); // yaw
                         int dy = (int)-(GyroMouseSensitivityY * (cur_rotation[0] - cur_rotation[3])); // pitch
-                        form.SimulateMoveBy(dx, dy);
+                        MoveGyroMouseBy(dx, dy);
                     }
 
                     SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
@@ -1052,6 +1053,7 @@ namespace BetterJoyForCemu {
                     bool resetMouseHeld = IsComboHeld(resetMouseVal);
                     if (resetMouseHeld && !prevResetMouseComboHeld) {
                         form.SimulateMoveToScreenCenter();
+                        ResetGyroMouseMotionState();
                         LogGyroMouseDiagnosticMarker("RESET");
                     }
                     prevResetMouseComboHeld = resetMouseHeld;
@@ -1080,11 +1082,11 @@ namespace BetterJoyForCemu {
         // more samples rather than lost.
         private float pendingMouseDx, pendingMouseDy;
 
-        // Last accelerometer-derived roll angle (radians) trusted enough to use for roll
-        // compensation - see the gating in ProcessGyroMouseRawSample. Starts at 0 (level/neutral)
-        // rather than uninitialized, since a controller could conceivably start out under
-        // sustained acceleration before ever reporting a trustworthy reading.
-        private float lastTrustedRollRad;
+        // Raw mode still uses every unsmoothed 5ms gyro sample, but integrates all three axes as
+        // one quaternion before deriving cursor yaw/pitch. Treating local Y and Z as permanently
+        // aligned screen axes is only a small-angle approximation and does not close under a
+        // compound path such as the figure-eight acceptance test.
+        private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
 
         // TEMPORARY diagnostic instrumentation for the figure-eight/circle drift investigation
         // (see CODE_REVIEW.md). Everything below is scoped to the CURRENT interval only (reset
@@ -1101,7 +1103,7 @@ namespace BetterJoyForCemu {
         // write, off this path entirely.
         private const double DiagLogIntervalSeconds = 0.15;
         private static readonly ConcurrentQueue<string> diagLogQueue = new ConcurrentQueue<string>();
-        private static bool diagLogWriterStarted;
+        private static int diagLogWriterStarted;
 
         private long diagIntervalDx, diagIntervalDy, diagIntervalSampleCount;
         private long diagIntervalPositiveCount, diagIntervalNegativeCount;
@@ -1109,12 +1111,9 @@ namespace BetterJoyForCemu {
         private float diagIntervalMinGyrGY = float.MaxValue, diagIntervalMaxGyrGY = float.MinValue;
         private long diagLastLogTimestamp;
 
-        // Raw yaw/roll rates (gyr_g.Z/X - gyr_g.Y=pitch is tracked above), the actual
-        // accelerometer-derived roll angle roll compensation uses (not a naive integral of
-        // gyr_g.X, which the review correctly pointed out isn't a reliable orientation during
-        // real 3D rotation), and the post-compensation yaw/pitch rates that actually reach
-        // sensitivity scaling - side by side with the raw ones, so a bad compensation transform
-        // (as opposed to a bad raw signal) is directly visible instead of inferred.
+        // Raw yaw/roll rates (gyr_g.Z/X - gyr_g.Y=pitch is tracked above), the quaternion-derived
+        // orientation roll, and the orientation-mapped yaw/pitch rates that actually reach
+        // sensitivity scaling - side by side so mapping behavior is directly visible.
         private double diagIntervalSumGyrGZ, diagIntervalSumGyrGX, diagIntervalSumRollDeg;
         private double diagIntervalSumYawRate, diagIntervalSumPitchRate;
         private float diagIntervalMinGyrGZ = float.MaxValue, diagIntervalMaxGyrGZ = float.MinValue;
@@ -1137,9 +1136,8 @@ namespace BetterJoyForCemu {
         // this diagnostic code only activates once GyroMouseDebugLogging/actual gyro-mouse use
         // requires it, instead of running for every Joycon regardless of whether it's ever used.
         private static void EnsureDiagLogWriterStarted() {
-            if (diagLogWriterStarted)
+            if (Interlocked.CompareExchange(ref diagLogWriterStarted, 1, 0) != 0)
                 return;
-            diagLogWriterStarted = true;
             new Thread(DiagLogWriterLoop) { IsBackground = true, Name = "GyroMouseDiagLogWriter" }.Start();
         }
 
@@ -1206,7 +1204,7 @@ namespace BetterJoyForCemu {
             float neutralValue = allowCalibration ? activeData[1] : gyr_neutral[1];
 
             string line = string.Format(
-                "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(accel): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  compensated: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}\r\n",
+                "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(quat): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  mapped: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}\r\n",
                 DateTime.Now,
                 diagIntervalSumGyrGY / diagIntervalSampleCount, diagIntervalMinGyrGY, diagIntervalMaxGyrGY,
                 diagIntervalPositiveCount, diagIntervalNegativeCount,
@@ -1268,7 +1266,19 @@ namespace BetterJoyForCemu {
             diagLogQueue.Enqueue(string.Format("{0:HH:mm:ss.fff}  *** {1} ***\r\n", DateTime.Now, label));
         }
 
-        // flushToMouse: accumulate every sub-sample (all 3, for accuracy - see the field comment
+        private void ResetGyroMouseMotionState() {
+            pendingMouseDx = pendingMouseDy = 0.0f;
+            gyroMouseOrientation.Reset();
+        }
+
+        private void MoveGyroMouseBy(int dx, int dy) {
+            if (GyroMouseDirectCursor)
+                form.SimulateCursorMoveBy(dx, dy);
+            else
+                form.SimulateMoveBy(dx, dy);
+        }
+
+        // flushToMouse: integrate every sub-sample (all 3, for accuracy - see the field comment
         // above), but only actually call SimulateMoveBy once per report (the last sub-sample),
         // matching the pre-fix call rate. Calling it 3x/report instead tripled the pipe-write
         // rate in service mode (HeadlessJoyconHost.SendMessage's queue, see the fix there) - under
@@ -1277,60 +1287,56 @@ namespace BetterJoyForCemu {
         // from a different cause, and would plausibly cycle with motion intensity (queue fills
         // during a burst, drains during a lull) rather than being constant.
         private void ProcessGyroMouseRawSample(bool flushToMouse) {
-            if (UseFilteredIMU || extraGyroFeature != "mouse")
+            if (UseFilteredIMU || extraGyroFeature != "mouse") {
+                ResetGyroMouseMotionState();
                 return;
-            if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft))))
+            }
+            if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
+                ResetGyroMouseMotionState();
                 return;
+            }
 
-            if (!(Config.Value("active_gyro") == "0" || active_gyro))
+            if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
+                ResetGyroMouseMotionState();
                 return;
+            }
 
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
 
             float yawRate = gyr_g.Z;
             float pitchRate = gyr_g.Y;
+            float rollRad = 0.0f;
 
-            // Roll compensation: the figure-eight drift investigation (see CODE_REVIEW.md) ruled
-            // out gyro bias with a genuine stationary-controller baseline (rock-steady near zero),
-            // then found large, sustained roll swings present specifically during active motion
-            // and absent at rest - matching exactly where the drift does and doesn't happen. The
-            // raw path was mapping controller-LOCAL yaw/pitch straight to screen X/Y with no
-            // regard for how the controller is currently rolled, so a figure-eight's natural
-            // wrist roll leaks yaw into the pitch axis. This rotates the (yaw, pitch) rate vector
-            // by the current roll angle (from the accelerometer - gravity-referenced, so it
-            // doesn't drift the way integrating gyr_g.X over time would) to undo that leak before
-            // it reaches sensitivity scaling. The negation here is confirmed correct against real
-            // hardware (an un-negated version was tested first and made no difference; negated
-            // was a dramatic improvement) - not an arbitrary sign choice.
+            // The old raw path treated controller-local Y and Z as fixed screen axes. A compound
+            // rotation invalidates that assumption: once the controller rolls, those axes no
+            // longer point along screen Y/X, so even a physically closed figure-eight can acquire
+            // a one-way cursor remainder. An accelerometer roll correction improved it, but hand
+            // acceleration can look like gravity and corrupt that angle while moving.
             //
-            // The instantaneous accelerometer reading is only trustworthy when it's actually
-            // reading close to pure gravity (magnitude near 1g) - sustained motion like small
-            // clockwise circles keeps the hand under continuous centripetal acceleration, which
-            // contaminates that reading the whole time, not just as occasional noise. Confirmed on
-            // hardware: a tiny-circles test showed the raw instantaneous roll estimate drifting a
-            // sustained ~20-25 degrees over ~20 seconds of continuous motion, which - because this
-            // angle is what the rotation below is built from - dragged the compensated output
-            // increasingly off target the same way, disproportionately redirecting even small
-            // lateral input. Only update the trusted roll angle when the accelerometer magnitude
-            // is close enough to 1g to be believed; otherwise keep using the last trusted value.
-            const float AccTrustToleranceG = 0.2f;
-            float rollRad = -(float)Math.Atan2(acc_g.Y, acc_g.Z);
-            float accMagnitude = (float)Math.Sqrt(acc_g.X * acc_g.X + acc_g.Y * acc_g.Y + acc_g.Z * acc_g.Z);
-            if (Math.Abs(accMagnitude - 1.0f) <= AccTrustToleranceG)
-                lastTrustedRollRad = rollRad;
-
+            // Integrate the complete gyro quaternion instead, then take the change in its
+            // yaw/pitch coordinates. Those coordinates are state, not independent rate guesses,
+            // so returning to the starting orientation also returns their accumulated cursor
+            // displacement to zero (apart from actual sensor/integration error). The legacy path
+            // remains available behind the setting for an immediate hardware A/B comparison.
             if (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseRollCompensation"])) {
-                float cosRoll = (float)Math.Cos(lastTrustedRollRad);
-                float sinRoll = (float)Math.Sin(lastTrustedRollRad);
-                yawRate = gyr_g.Z * cosRoll - gyr_g.Y * sinRoll;
-                pitchRate = gyr_g.Z * sinRoll + gyr_g.Y * cosRoll;
+                gyroMouseOrientation.MapSample(gyr_g.X, gyr_g.Y, gyr_g.Z, subSamplePeriod,
+                                                out float deltaYawRad, out float deltaPitchRad,
+                                                out rollRad);
+                pendingMouseDx += GyroMouseSensitivityX * deltaYawRad;
+                pendingMouseDy += -(GyroMouseSensitivityY * deltaPitchRad);
+
+                // Keep diagnostics comparable to the old raw-rate log even though the actual
+                // mapping above works in per-sample angular deltas.
+                yawRate = deltaYawRad / (subSamplePeriod * degToRad);
+                pitchRate = deltaPitchRad / (subSamplePeriod * degToRad);
+            } else {
+                gyroMouseOrientation.Reset();
+                pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
+                pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
             }
 
-            pendingMouseDx += GyroMouseSensitivityX * (yawRate * subSamplePeriod * degToRad);
-            pendingMouseDy += -(GyroMouseSensitivityY * (pitchRate * subSamplePeriod * degToRad));
-
-            float rollDeg = lastTrustedRollRad * (180.0f / (float)Math.PI);
+            float rollDeg = rollRad * (180.0f / (float)Math.PI);
 
             if (!flushToMouse) {
                 RecordGyroMouseDiagnosticSample(0, 0, rollDeg, yawRate, pitchRate);
@@ -1345,7 +1351,7 @@ namespace BetterJoyForCemu {
             RecordGyroMouseDiagnosticSample(dx, dy, rollDeg, yawRate, pitchRate);
 
             if (dx != 0 || dy != 0)
-                form.SimulateMoveBy(dx, dy);
+                MoveGyroMouseBy(dx, dy);
         }
 
         // left_click/right_click/center_click/scroll_up/scroll_down (see App.config's comment on

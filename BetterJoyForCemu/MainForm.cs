@@ -314,6 +314,11 @@ namespace BetterJoyForCemu {
             WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
         }
 
+        public void SimulateCursorMoveBy(int dx, int dy) {
+            Point current = Cursor.Position;
+            Cursor.Position = new Point(current.X + dx, current.Y + dy);
+        }
+
         public void SimulateMoveToScreenCenter() {
             WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
         }

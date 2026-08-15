@@ -153,6 +153,7 @@
     <Compile Include="InputHelper.cs" />
     <Compile Include="InputIpcProtocol.cs" />
     <Compile Include="InputState.cs" />
+    <Compile Include="GyroMouseOrientation.cs" />
     <Compile Include="Joycon.cs" />
     <Compile Include="MadgwickAHRS.cs" />
     <Compile Include="MainForm.cs">

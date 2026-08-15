@@ -111,6 +111,10 @@ namespace BetterJoyForCemu {
                 case InputMessageType.SimulateMoveBy:
                     WindowsInput.Simulate.Events().MoveBy(msg.A, msg.B).Invoke();
                     break;
+                case InputMessageType.SimulateCursorMoveBy:
+                    var current = Cursor.Position;
+                    Cursor.Position = new System.Drawing.Point(current.X + msg.A, current.Y + msg.B);
+                    break;
                 case InputMessageType.SimulateMoveToScreenCenter:
                     WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
                     break;
