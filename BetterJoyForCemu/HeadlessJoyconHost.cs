@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
@@ -189,7 +190,63 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private void SendMessage(InputMessageType type, int a = 0, int b = 0) {
+        // SendMessage is called inline from a Joycon's own poll thread - for gyro-mouse, once per
+        // packet, at controller report rate. A synchronous pipe write there would stall that
+        // thread for however long the write+flush takes (named pipe buffer contention, the helper
+        // process being briefly busy, scheduling noise, ...), which delays draining the next HID
+        // report right along with it - one source of the lag/jitter reported in service mode vs
+        // the GUI (which calls WindowsInput in-process, no pipe involved). SendMessage now only
+        // enqueues; a dedicated writer thread (started once, for the host's lifetime) does the
+        // actual I/O off that critical path. Bounded so a genuinely stuck/disconnected pipe can't
+        // grow this without limit - if the writer thread has fallen far enough behind to fill it,
+        // dropping the newest message is preferable to blocking the caller waiting for room.
+        private readonly BlockingCollection<InputMessage> outgoingMessages =
+            new BlockingCollection<InputMessage>(new ConcurrentQueue<InputMessage>(), 64);
+
+        // SimulateMoveBy deltas bypass outgoingMessages entirely and accumulate here instead - a
+        // dropped discrete event (a click, a key) is a one-off glitch, but a dropped MoveBy is
+        // displacement that's just gone, permanently, and gyro-mouse calls this at controller
+        // report rate. Coalescing means a writer thread that falls behind under sustained motion
+        // never loses movement, just delivers it in a bigger jump next flush instead of a bounded
+        // queue silently dropping the newest deltas - which is what a fixed-capacity queue was
+        // doing here before, and reads as exactly the "constrained, then releases" cycling
+        // reported (queue fills during a burst, drains during a lull).
+        private readonly object pendingMoveLock = new object();
+        private int pendingMoveDx, pendingMoveDy;
+        private bool hasPendingMove;
+
+        public HeadlessJoyconHost() {
+            new Thread(PipeWriterLoop) { IsBackground = true, Name = "InputPipeWriter" }.Start();
+        }
+
+        // Bounded-wait instead of GetConsumingEnumerable's indefinite block, so this thread wakes
+        // up on its own to flush a pending mouse move even when no discrete event is queued -
+        // gyro-mouse alone, with nothing else bound, would otherwise never produce one.
+        private void PipeWriterLoop() {
+            while (true) {
+                if (outgoingMessages.TryTake(out InputMessage msg, 5))
+                    WriteMessage(msg);
+
+                FlushPendingMove();
+            }
+        }
+
+        private void FlushPendingMove() {
+            int dx, dy;
+            lock (pendingMoveLock) {
+                if (!hasPendingMove)
+                    return;
+                dx = pendingMoveDx;
+                dy = pendingMoveDy;
+                pendingMoveDx = 0;
+                pendingMoveDy = 0;
+                hasPendingMove = false;
+            }
+
+            WriteMessage(new InputMessage { Type = InputMessageType.SimulateMoveBy, A = dx, B = dy });
+        }
+
+        private void WriteMessage(InputMessage msg) {
             lock (pipeLock) {
                 if (pipe == null || !pipe.IsConnected) {
                     if (!loggedNoHelperConnected) {
@@ -201,12 +258,16 @@ namespace BetterJoyForCemu {
 
                 try {
                     var writer = new BinaryWriter(pipe);
-                    new InputMessage { Type = type, A = a, B = b }.WriteTo(writer);
+                    msg.WriteTo(writer);
                     writer.Flush();
                 } catch {
                     // best-effort - a mid-write disconnect just drops this one command
                 }
             }
+        }
+
+        private void SendMessage(InputMessageType type, int a = 0, int b = 0) {
+            outgoingMessages.TryAdd(new InputMessage { Type = type, A = a, B = b });
         }
 
         public void SimulateKeyClick(int keyCode) => SendMessage(InputMessageType.SimulateKeyClick, keyCode);
@@ -216,7 +277,15 @@ namespace BetterJoyForCemu {
         public void SimulateButtonHold(int buttonCode) => SendMessage(InputMessageType.SimulateButtonHold, buttonCode);
         public void SimulateButtonRelease(int buttonCode) => SendMessage(InputMessageType.SimulateButtonRelease, buttonCode);
         public void SimulateMoveTo(int x, int y) => SendMessage(InputMessageType.SimulateMoveTo, x, y);
-        public void SimulateMoveBy(int dx, int dy) => SendMessage(InputMessageType.SimulateMoveBy, dx, dy);
+
+        public void SimulateMoveBy(int dx, int dy) {
+            lock (pendingMoveLock) {
+                pendingMoveDx += dx;
+                pendingMoveDy += dy;
+                hasPendingMove = true;
+            }
+        }
+
         public void SimulateMoveToScreenCenter() => SendMessage(InputMessageType.SimulateMoveToScreenCenter);
         public void SimulateScroll(bool up) => SendMessage(InputMessageType.SimulateScroll, up ? 1 : 0);
 

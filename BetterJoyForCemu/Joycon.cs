@@ -50,6 +50,16 @@ namespace BetterJoyForCemu {
         }
         public bool active_gyro = false;
 
+        // Real elapsed time since the last DoThingsWithButtons call, used to scale raw angular
+        // velocity (gyr_g) into a per-packet rotation amount - previously a hardcoded 0.015f
+        // (assumed 15ms/~66Hz) regardless of how much time had actually passed. Report timing
+        // isn't perfectly metronomic, especially over Bluetooth, so a fixed assumption scales
+        // every frame's motion by however wrong that assumption happened to be that frame -
+        // read as jittery/inconsistent speed rather than smooth motion, independent of anything
+        // else about the connection or IMU filtering settings. -1 the first call so a long gap
+        // before the very first packet (e.g. right after connecting) can't produce a huge dt.
+        private long lastDoThingsTimestamp = -1;
+
         // Tracks the active_gyro combo's held state from the previous packet, so toggle mode
         // (GyroHoldToggle == false) can flip on the rising edge only - the moment the combo
         // first becomes fully held, not every packet it stays held.
@@ -683,6 +693,7 @@ namespace BetterJoyForCemu {
                         if (newbat != battery)
                             BatteryChanged();
                     }
+                    ProcessGyroMouseRawSample(n == 2);
                     Timestamp += 5000; // 5ms difference
 
                     packetCounter++;
@@ -935,7 +946,12 @@ namespace BetterJoyForCemu {
 
             // Filtered IMU data
             this.cur_rotation = AHRS.GetEulerAngles();
-            float dt = 0.015f; // 15ms
+
+            long nowTimestamp = Stopwatch.GetTimestamp();
+            float dt = lastDoThingsTimestamp < 0
+                ? 0.015f // no prior packet to measure from yet - same assumption this always used
+                : (float)((nowTimestamp - lastDoThingsTimestamp) / (double)Stopwatch.Frequency);
+            lastDoThingsTimestamp = nowTimestamp;
 
             if (GyroAnalogSliders && (other != null || isPro)) {
                 Button leftT = isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2;
@@ -1000,17 +1016,16 @@ namespace BetterJoyForCemu {
             } else if (extraGyroFeature == "mouse" && (isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
                 // gyro data is in degrees/s
                 if (Config.Value("active_gyro") == "0" || active_gyro) {
-                    int dx, dy;
-
+                    // UseFilteredIMU=false's own movement is applied per IMU sub-sample instead
+                    // (see ProcessGyroMouseRawSample, called from ReceiveRaw for all 3 of a
+                    // report's bundled sub-samples) - DoThingsWithButtons only runs once per
+                    // report (on the first sub-sample), so computing raw movement here used only
+                    // 1 of every 3 available gyro readings, scaled by a dt spanning all three.
                     if (UseFilteredIMU) {
-                        dx = (int)(GyroMouseSensitivityX * (cur_rotation[1] - cur_rotation[4])); // yaw
-                        dy = (int)-(GyroMouseSensitivityY * (cur_rotation[0] - cur_rotation[3])); // pitch
-                    } else {
-                        dx = (int)(GyroMouseSensitivityX * (gyr_g.Z * dt));
-                        dy = (int)-(GyroMouseSensitivityY * (gyr_g.Y * dt));
+                        int dx = (int)(GyroMouseSensitivityX * (cur_rotation[1] - cur_rotation[4])); // yaw
+                        int dy = (int)-(GyroMouseSensitivityY * (cur_rotation[0] - cur_rotation[3])); // pitch
+                        form.SimulateMoveBy(dx, dy);
                     }
-
-                    form.SimulateMoveBy(dx, dy);
 
                     SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
                     SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right);
@@ -1031,6 +1046,60 @@ namespace BetterJoyForCemu {
                     prevResetMouseComboHeld = resetMouseHeld;
                 }
             }
+        }
+
+        // UseFilteredIMU=false's counterpart to the movement calc inside DoThingsWithButtons'
+        // "mouse" block, called once per IMU sub-sample from ReceiveRaw instead of once per
+        // report - see the comment where DoThingsWithButtons calls SimulateMoveBy for why. gyr_g
+        // reflects whichever sub-sample ExtractIMUValues just parsed immediately before this is
+        // called; the two must always be called as a pair. Mirrors that block's gating and
+        // sensitivity/direction math exactly, just evaluated per sub-sample - each bundled
+        // sub-sample is a fixed ~5ms apart internally (matching MadgwickAHRS's own SamplePeriod,
+        // and the Timestamp += 5000 bookkeeping already in ReceiveRaw's loop), which is why this
+        // uses that fixed period rather than the measured, report-level dt: unlike dt (real
+        // elapsed time between whole reports, which does vary, especially over Bluetooth), the
+        // spacing between sub-samples within one report is a known hardware constant, not
+        // something to measure.
+        // Sub-pixel remainder left over from ProcessGyroMouseRawSample's int truncation, carried
+        // into the next sample instead of discarded - three sub-samples a report, each covering
+        // only ~5ms, means a slow/deliberate rotation's per-sample delta is very often under 1.0
+        // in magnitude on its own. Truncating that straight to 0 every time would zero out slow,
+        // precise movement entirely and only respond to fast motion - accumulating the remainder
+        // means that same slow rotation still adds up to real movement, just spread over a few
+        // more samples rather than lost.
+        private float pendingMouseDx, pendingMouseDy;
+
+        // flushToMouse: accumulate every sub-sample (all 3, for accuracy - see the field comment
+        // above), but only actually call SimulateMoveBy once per report (the last sub-sample),
+        // matching the pre-fix call rate. Calling it 3x/report instead tripled the pipe-write
+        // rate in service mode (HeadlessJoyconHost.SendMessage's queue, see the fix there) - under
+        // sustained motion that can outrun the writer thread and start dropping the newest
+        // messages, which reads as the same "constrained" symptom this was meant to fix, just
+        // from a different cause, and would plausibly cycle with motion intensity (queue fills
+        // during a burst, drains during a lull) rather than being constant.
+        private void ProcessGyroMouseRawSample(bool flushToMouse) {
+            if (UseFilteredIMU || extraGyroFeature != "mouse")
+                return;
+            if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft))))
+                return;
+            if (!(Config.Value("active_gyro") == "0" || active_gyro))
+                return;
+
+            const float subSamplePeriod = 0.005f;
+            const float degToRad = 0.0174533f;
+            pendingMouseDx += GyroMouseSensitivityX * (gyr_g.Z * subSamplePeriod * degToRad);
+            pendingMouseDy += -(GyroMouseSensitivityY * (gyr_g.Y * subSamplePeriod * degToRad));
+
+            if (!flushToMouse)
+                return;
+
+            int dx = (int)pendingMouseDx;
+            int dy = (int)pendingMouseDy;
+            pendingMouseDx -= dx;
+            pendingMouseDy -= dy;
+
+            if (dx != 0 || dy != 0)
+                form.SimulateMoveBy(dx, dy);
         }
 
         // left_click/right_click/center_click/scroll_up/scroll_down (see App.config's comment on
