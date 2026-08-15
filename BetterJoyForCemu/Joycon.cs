@@ -696,7 +696,7 @@ namespace BetterJoyForCemu {
                         if (newbat != battery)
                             BatteryChanged();
                     }
-                    ProcessGyroMouseRawSample(n == 2);
+                    ProcessGyroMouseSample(n == 2);
                     Timestamp += 5000; // 5ms difference
 
                     packetCounter++;
@@ -963,6 +963,27 @@ namespace BetterJoyForCemu {
                 : (float)((nowTimestamp - lastDoThingsTimestamp) / (double)Stopwatch.Frequency);
             lastDoThingsTimestamp = nowTimestamp;
 
+            // "Re-Centre Gyro" is a one-shot orientation operation, not merely a request to move
+            // the Windows pointer. Apply it before sliders/stick/mouse consume this packet so the
+            // pose held at the rising edge is neutral immediately. The legacy config key remains
+            // reset_mouse for compatibility; only mouse mode also moves the visible cursor.
+            string resetMouseVal = Config.Value("reset_mouse");
+            if (resetMouseVal != "0") {
+                bool resetMouseHeld = IsComboHeld(resetMouseVal);
+                if (resetMouseHeld && !prevResetMouseComboHeld) {
+                    if (extraGyroFeature == "mouse" &&
+                        (isPro || other == null ||
+                         (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
+                        form.SimulateMoveToScreenCenter();
+                    }
+
+                    RecenterGyro();
+                    dt = 0.0f;
+                    LogGyroMouseDiagnosticMarker("RESET");
+                }
+                prevResetMouseComboHeld = resetMouseHeld;
+            }
+
             if (GyroAnalogSliders && (other != null || isPro)) {
                 Button leftT = isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2;
                 Button rightT = isLeft ? Button.SHOULDER2_2 : Button.SHOULDER_2;
@@ -1026,16 +1047,13 @@ namespace BetterJoyForCemu {
             } else if (extraGyroFeature == "mouse" && (isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
                 // gyro data is in degrees/s
                 if (Config.Value("active_gyro") == "0" || active_gyro) {
-                    // UseFilteredIMU=false's own movement is applied per IMU sub-sample instead
-                    // (see ProcessGyroMouseRawSample, called from ReceiveRaw for all 3 of a
-                    // report's bundled sub-samples) - DoThingsWithButtons only runs once per
-                    // report (on the first sub-sample), so computing raw movement here used only
-                    // 1 of every 3 available gyro readings, scaled by a dt spanning all three.
-                    if (UseFilteredIMU) {
-                        int dx = (int)(GyroMouseSensitivityX * (cur_rotation[1] - cur_rotation[4])); // yaw
-                        int dy = (int)-(GyroMouseSensitivityY * (cur_rotation[0] - cur_rotation[3])); // pitch
-                        MoveGyroMouseBy(dx, dy);
-                    }
+                    // Mouse movement itself is applied per IMU sub-sample in
+                    // ProcessGyroMouseSample. Both filtered and raw modes are gyro-only here:
+                    // feeding Madgwick's accelerometer-corrected pitch into mouse Y made linear
+                    // hand movement act like tilt input, and subtracting its Euler angles could
+                    // jump at wrap/singularity boundaries. UseFilteredIMU now selects a low-pass
+                    // filter over the gyro rates before the same relative quaternion mapping;
+                    // it no longer changes the mouse into an absolute attitude controller.
 
                     SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
                     SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right);
@@ -1044,36 +1062,17 @@ namespace BetterJoyForCemu {
                     SimulateGyroMouseScroll("scroll_down", false);
                 }
 
-                // Reset mouse position to centre of primary monitor - a one-shot action, not a
-                // held state like active_gyro, so this only ever needs the rising edge: fire once
-                // when the bind (single input or combo, see IsComboHeld) transitions from not-
-                // fully-held to fully-held, not again until it's released and re-pressed.
-                string resetMouseVal = Config.Value("reset_mouse");
-                if (resetMouseVal != "0") {
-                    bool resetMouseHeld = IsComboHeld(resetMouseVal);
-                    if (resetMouseHeld && !prevResetMouseComboHeld) {
-                        form.SimulateMoveToScreenCenter();
-                        ResetGyroMouseMotionState();
-                        LogGyroMouseDiagnosticMarker("RESET");
-                    }
-                    prevResetMouseComboHeld = resetMouseHeld;
-                }
             }
         }
 
-        // UseFilteredIMU=false's counterpart to the movement calc inside DoThingsWithButtons'
-        // "mouse" block, called once per IMU sub-sample from ReceiveRaw instead of once per
-        // report - see the comment where DoThingsWithButtons calls SimulateMoveBy for why. gyr_g
-        // reflects whichever sub-sample ExtractIMUValues just parsed immediately before this is
-        // called; the two must always be called as a pair. Mirrors that block's gating and
-        // sensitivity/direction math exactly, just evaluated per sub-sample - each bundled
-        // sub-sample is a fixed ~5ms apart internally (matching MadgwickAHRS's own SamplePeriod,
-        // and the Timestamp += 5000 bookkeeping already in ReceiveRaw's loop), which is why this
-        // uses that fixed period rather than the measured, report-level dt: unlike dt (real
-        // elapsed time between whole reports, which does vary, especially over Bluetooth), the
-        // spacing between sub-samples within one report is a known hardware constant, not
-        // something to measure.
-        // Sub-pixel remainder left over from ProcessGyroMouseRawSample's int truncation, carried
+        // Gyro-mouse movement is calculated once per IMU sub-sample from ReceiveRaw rather than
+        // once per report. gyr_g reflects whichever sub-sample ExtractIMUValues just parsed
+        // immediately before this is called; the two must always be called as a pair. Each
+        // bundled sub-sample is a fixed ~5ms apart internally (matching MadgwickAHRS's own
+        // SamplePeriod and the Timestamp += 5000 bookkeeping already in ReceiveRaw's loop), so
+        // this uses that fixed period rather than report-level wall-clock time.
+        //
+        // Sub-pixel remainder left over from ProcessGyroMouseSample's int truncation, carried
         // into the next sample instead of discarded - three sub-samples a report, each covering
         // only ~5ms, means a slow/deliberate rotation's per-sample delta is very often under 1.0
         // in magnitude on its own. Truncating that straight to 0 every time would zero out slow,
@@ -1082,17 +1081,45 @@ namespace BetterJoyForCemu {
         // more samples rather than lost.
         private float pendingMouseDx, pendingMouseDy;
 
-        // Raw mode still uses every unsmoothed 5ms gyro sample, but integrates all three axes as
-        // one quaternion before deriving cursor yaw/pitch. Treating local Y and Z as permanently
-        // aligned screen axes is only a small-angle approximation and does not close under a
-        // compound path such as the figure-eight acceptance test.
+        // UseFilteredIMU used to route gyro-mouse through Madgwick's accelerometer-corrected
+        // absolute pitch/yaw. That is useful for estimating attitude while mostly stationary,
+        // but wrong for a relative pointer: ordinary linear hand acceleration is not gravity,
+        // yet the filter interprets it as tilt and directly moves mouse Y. Keep filtering in the
+        // gyro domain instead. A one-pole low-pass at 18 Hz removes the Joycons' high-frequency
+        // hand/sensor chatter with only ~9ms time constant, while leaving DC/slow deliberate
+        // rotation intact. Raw mode bypasses these fields entirely.
+        private const float GyroMouseFilterCutoffHz = 18.0f;
+        private Vector3 filteredGyroMouseRate;
+        private bool filteredGyroMouseRateInitialized;
+
+        // A low-pass removes high-frequency noise but deliberately preserves DC, including the
+        // small temperature/unit-specific zero-rate bias that shows up as a steady cursor crawl
+        // while a Joycon is sitting untouched. Learn that bias only from a sustained stillness
+        // window. Accelerometer magnitude is used strictly as a confidence gate (near 1g means
+        // no obvious linear acceleration); accelerometer direction never enters cursor motion.
+        private const int GyroMouseBiasWindowSamples = 100; // 0.5s at 200 Hz
+        private const float GyroMouseInitialStillRateLimit = 2.0f; // degrees/sec per axis
+        private const float GyroMouseLearnedStillRateLimit = 1.25f;
+        private const float GyroMouseStillRangeLimit = 1.0f;
+        private const float GyroMouseStillAccelTolerance = 0.15f;
+        private Vector3 gyroMouseBias;
+        private bool gyroMouseBiasInitialized;
+        private Vector3 gyroMouseBiasWindowSum;
+        private Vector3 gyroMouseBiasWindowMin;
+        private Vector3 gyroMouseBiasWindowMax;
+        private int gyroMouseBiasWindowCount;
+
+        // Both modes integrate all three gyro axes as one quaternion before deriving cursor
+        // yaw/pitch; filtered mode simply smooths those rates first. Treating local Y and Z as
+        // permanently aligned screen axes is only a small-angle approximation and does not close
+        // under a compound path such as the figure-eight acceptance test.
         private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
 
         // A solo Joycon is held sideways and ExtractIMUValues rotates its gyro axes; a joined
         // Joycon uses the pair/vertical basis instead. Keeping an orientation integrated in the
-        // old basis after other changes would mix two coordinate systems and make gyro-mouse
-        // jump or bend badly after join/split. This snapshot is read and updated only by the
-        // controller's poll thread in ProcessGyroMouseRawSample.
+        // old basis after other changes would mix two coordinate systems and make gyro-mouse or
+        // another filtered gyro feature jump/bend badly after join/split. This snapshot is read
+        // and updated only by the controller's poll thread.
         private Joycon gyroMouseOrientationPartner;
 
         // TEMPORARY diagnostic instrumentation for the figure-eight/circle drift investigation
@@ -1276,6 +1303,107 @@ namespace BetterJoyForCemu {
         private void ResetGyroMouseMotionState() {
             pendingMouseDx = pendingMouseDy = 0.0f;
             gyroMouseOrientation.Reset();
+            filteredGyroMouseRate = Vector3.Zero;
+            filteredGyroMouseRateInitialized = false;
+        }
+
+        private void ResetGyroMouseBiasWindow() {
+            gyroMouseBiasWindowSum = Vector3.Zero;
+            gyroMouseBiasWindowMin = Vector3.Zero;
+            gyroMouseBiasWindowMax = Vector3.Zero;
+            gyroMouseBiasWindowCount = 0;
+        }
+
+        private void ResetGyroMouseBiasEstimator() {
+            gyroMouseBias = Vector3.Zero;
+            gyroMouseBiasInitialized = false;
+            ResetGyroMouseBiasWindow();
+        }
+
+        private static float MaxAbsComponent(Vector3 value) {
+            return Math.Max(Math.Abs(value.X), Math.Max(Math.Abs(value.Y), Math.Abs(value.Z)));
+        }
+
+        // Returns gyro rate with the learned stationary zero-rate offset removed. Before the
+        // first stable 0.5s window completes, a sample that is itself a stillness candidate is
+        // suppressed rather than allowed to crawl the cursor; deliberate motion immediately
+        // breaks the window and passes through normally.
+        private Vector3 ApplyGyroMouseStationaryBias(Vector3 rawRate) {
+            Vector3 residual = rawRate - gyroMouseBias;
+            float stillRateLimit = gyroMouseBiasInitialized
+                ? GyroMouseLearnedStillRateLimit
+                : GyroMouseInitialStillRateLimit;
+            float accelMagnitude = acc_g.Length();
+            bool stillCandidate = Math.Abs(accelMagnitude - 1.0f) <= GyroMouseStillAccelTolerance &&
+                                  MaxAbsComponent(residual) <= stillRateLimit;
+
+            if (!stillCandidate) {
+                ResetGyroMouseBiasWindow();
+                return residual;
+            }
+
+            if (gyroMouseBiasWindowCount == 0) {
+                gyroMouseBiasWindowMin = rawRate;
+                gyroMouseBiasWindowMax = rawRate;
+            } else {
+                gyroMouseBiasWindowMin = new Vector3(
+                    Math.Min(gyroMouseBiasWindowMin.X, rawRate.X),
+                    Math.Min(gyroMouseBiasWindowMin.Y, rawRate.Y),
+                    Math.Min(gyroMouseBiasWindowMin.Z, rawRate.Z));
+                gyroMouseBiasWindowMax = new Vector3(
+                    Math.Max(gyroMouseBiasWindowMax.X, rawRate.X),
+                    Math.Max(gyroMouseBiasWindowMax.Y, rawRate.Y),
+                    Math.Max(gyroMouseBiasWindowMax.Z, rawRate.Z));
+            }
+
+            gyroMouseBiasWindowSum += rawRate;
+            gyroMouseBiasWindowCount++;
+
+            if (gyroMouseBiasWindowCount >= GyroMouseBiasWindowSamples) {
+                Vector3 range = gyroMouseBiasWindowMax - gyroMouseBiasWindowMin;
+                if (MaxAbsComponent(range) <= GyroMouseStillRangeLimit) {
+                    Vector3 measuredBias = gyroMouseBiasWindowSum / gyroMouseBiasWindowCount;
+                    bool firstBiasLock = !gyroMouseBiasInitialized;
+                    gyroMouseBias = gyroMouseBiasInitialized
+                        ? gyroMouseBias + 0.2f * (measuredBias - gyroMouseBias)
+                        : measuredBias;
+                    gyroMouseBiasInitialized = true;
+                    residual = rawRate - gyroMouseBias;
+                    if (firstBiasLock) {
+                        LogGyroMouseDiagnosticMarker(string.Format(
+                            "GYRO BIAS LOCK x={0:F3} y={1:F3} z={2:F3} deg/s",
+                            gyroMouseBias.X, gyroMouseBias.Y, gyroMouseBias.Z));
+                    }
+                }
+                ResetGyroMouseBiasWindow();
+            }
+
+            return gyroMouseBiasInitialized ? residual : Vector3.Zero;
+        }
+
+        // Makes the pose held at the moment the Re-Centre Gyro bind is pressed the new neutral
+        // orientation. This intentionally does not touch activeData/gyr_neutral/acc calibration:
+        // recentering is a coordinate-frame change, while calibration estimates sensor offsets.
+        private void RecenterGyro() {
+            ResetGyroMouseMotionState();
+            ResetGyroMouseBiasWindow();
+            AHRS.Recenter();
+            cur_rotation = AHRS.GetEulerAngles();
+            lastDoThingsTimestamp = -1;
+        }
+
+        // A solo Joycon and a joined Joycon transform the same physical IMU into different
+        // coordinate bases in ExtractIMUValues. Never carry either orientation estimator across
+        // that boundary. Kept on the Poll thread so it cannot race AHRS.Update/MapSample.
+        private void EnsureGyroOrientationBasis() {
+            Joycon currentPartner = other;
+            if (Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner))
+                return;
+
+            ResetGyroMouseMotionState();
+            ResetGyroMouseBiasEstimator();
+            AHRS.Reset();
+            gyroMouseOrientationPartner = currentPartner;
         }
 
         private void MoveGyroMouseBy(int dx, int dy) {
@@ -1293,14 +1421,10 @@ namespace BetterJoyForCemu {
         // messages, which reads as the same "constrained" symptom this was meant to fix, just
         // from a different cause, and would plausibly cycle with motion intensity (queue fills
         // during a burst, drains during a lull) rather than being constant.
-        private void ProcessGyroMouseRawSample(bool flushToMouse) {
-            Joycon currentPartner = other;
-            if (!Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner)) {
-                ResetGyroMouseMotionState();
-                gyroMouseOrientationPartner = currentPartner;
-            }
+        private void ProcessGyroMouseSample(bool flushToMouse) {
+            EnsureGyroOrientationBasis();
 
-            if (UseFilteredIMU || extraGyroFeature != "mouse") {
+            if (extraGyroFeature != "mouse") {
                 ResetGyroMouseMotionState();
                 return;
             }
@@ -1308,6 +1432,13 @@ namespace BetterJoyForCemu {
                 ResetGyroMouseMotionState();
                 return;
             }
+
+            // Keep learning the selected controller's zero-rate bias while gyro-mouse is
+            // inactive, so activating it after the controller has been resting does not begin
+            // with half a second of cursor crawl.
+            Vector3 mouseGyroRate = gyr_g;
+            if (UseFilteredIMU)
+                mouseGyroRate = ApplyGyroMouseStationaryBias(mouseGyroRate);
 
             if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
                 ResetGyroMouseMotionState();
@@ -1317,8 +1448,24 @@ namespace BetterJoyForCemu {
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
 
-            float yawRate = gyr_g.Z;
-            float pitchRate = gyr_g.Y;
+            if (UseFilteredIMU) {
+                float alpha = 1.0f - (float)Math.Exp(-2.0f * Math.PI * GyroMouseFilterCutoffHz * subSamplePeriod);
+                if (!filteredGyroMouseRateInitialized) {
+                    filteredGyroMouseRate = mouseGyroRate;
+                    filteredGyroMouseRateInitialized = true;
+                } else {
+                    filteredGyroMouseRate += alpha * (mouseGyroRate - filteredGyroMouseRate);
+                }
+                mouseGyroRate = filteredGyroMouseRate;
+            } else {
+                // Do not preserve a stale filtered tail if settings are changed and this
+                // controller is later recreated in raw mode.
+                filteredGyroMouseRate = Vector3.Zero;
+                filteredGyroMouseRateInitialized = false;
+            }
+
+            float yawRate = mouseGyroRate.Z;
+            float pitchRate = mouseGyroRate.Y;
             float rollRad = 0.0f;
 
             // The old raw path treated controller-local Y and Z as fixed screen axes. A compound
@@ -1333,7 +1480,7 @@ namespace BetterJoyForCemu {
             // displacement to zero (apart from actual sensor/integration error). The legacy path
             // remains available behind the setting for an immediate hardware A/B comparison.
             if (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseRollCompensation"])) {
-                gyroMouseOrientation.MapSample(gyr_g.X, gyr_g.Y, gyr_g.Z, subSamplePeriod,
+                gyroMouseOrientation.MapSample(mouseGyroRate.X, mouseGyroRate.Y, mouseGyroRate.Z, subSamplePeriod,
                                                 out float deltaYawRad, out float deltaPitchRad,
                                                 out rollRad);
                 pendingMouseDx += GyroMouseSensitivityX * deltaYawRad;
@@ -1597,6 +1744,11 @@ namespace BetterJoyForCemu {
         // Get Gyro/Accel data
         private void ExtractIMUValues(byte[] report_buf, int n = 0) {
             if (!(isSnes || is64)) {
+                // Must happen before this sample is transformed/added to either estimator. If a
+                // join/split changed the basis, the orientation accumulated in the old basis is
+                // invalid even though the physical controller itself never disconnected.
+                EnsureGyroOrientationBasis();
+
                 gyr_r[0] = (Int16)(report_buf[19 + n * 12] | ((report_buf[20 + n * 12] << 8) & 0xff00));
                 gyr_r[1] = (Int16)(report_buf[21 + n * 12] | ((report_buf[22 + n * 12] << 8) & 0xff00));
                 gyr_r[2] = (Int16)(report_buf[23 + n * 12] | ((report_buf[24 + n * 12] << 8) & 0xff00));

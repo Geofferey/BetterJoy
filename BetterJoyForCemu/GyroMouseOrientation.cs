@@ -1,7 +1,7 @@
 using System;
 
 namespace BetterJoyForCemu {
-    // Integrates the complete controller orientation from raw body-space gyro rates, then exposes
+    // Integrates the complete controller orientation from body-space gyro rates, then exposes
     // incremental yaw/pitch in the orientation frame that was current at Reset().  Unlike adding
     // local Y/Z rates independently, these deltas form one coherent 3D rotation: if the controller
     // returns to its starting orientation, their accumulated yaw/pitch return to the start too
