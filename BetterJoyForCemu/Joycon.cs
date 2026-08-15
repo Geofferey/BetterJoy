@@ -1086,8 +1086,14 @@ namespace BetterJoyForCemu {
         // mouse. BetterJoy's public gyr_g/acc_g frame is retained untouched for UDP, gyro-stick,
         // analog sliders and compatibility. A solo Joy-Con gets an additional proper sideways
         // rotation, applied identically to these two vectors before fusion.
-        private Vector3 gyroMouseGyroRate;
-        private Vector3 gyroMouseAccel;
+        private Vector3 gyroMouseSensorRate;
+        private Vector3 gyroMouseSensorAccel;
+
+        // Constant roll correction captured by Re-Centre Gyro. Rows describe the neutral X/Y
+        // axes in the canonical sensor frame; Z is the controller's pointing/roll axis and is
+        // unchanged. Identity preserves the normal Pro/paired/sideways defaults until recentered.
+        private Vector2 gyroMouseNeutralX = new Vector2(1.0f, 0.0f);
+        private Vector2 gyroMouseNeutralY = new Vector2(0.0f, 1.0f);
 
         // Smoothing removes high-frequency noise but deliberately preserves DC, including the
         // small temperature/unit-specific zero-rate bias that shows up as a steady cursor crawl
@@ -1333,12 +1339,24 @@ namespace BetterJoyForCemu {
         // first stable 0.5s window completes, a sample that is itself a stillness candidate is
         // suppressed rather than allowed to crawl the cursor; deliberate motion immediately
         // breaks the window and passes through normally.
-        private Vector3 ApplyGyroMouseStationaryBias(Vector3 rawRate) {
+        private Vector3 ApplyGyroMouseStationaryBias(Vector3 rawRate, bool allowBiasLearning) {
             Vector3 residual = rawRate - gyroMouseBias;
+
+            // A constant slow yaw is indistinguishable from bias using only gyro and gravity:
+            // rotation around gravity does not change the accelerometer direction. Never let an
+            // already-calibrated pointer learn while active, or deliberate slow movement in one
+            // direction becomes the new zero and makes that direction feel like it is fighting
+            // the user. Initial lock is still allowed so always-on gyro can remove startup drift;
+            // subsequent temperature adjustment happens while the activation bind is released.
+            if (gyroMouseBiasInitialized && !allowBiasLearning) {
+                ResetGyroMouseBiasWindow();
+                return residual;
+            }
+
             float stillRateLimit = gyroMouseBiasInitialized
                 ? GyroMouseLearnedStillRateLimit
                 : GyroMouseInitialStillRateLimit;
-            float accelMagnitude = gyroMouseAccel.Length();
+            float accelMagnitude = gyroMouseSensorAccel.Length();
             bool stillCandidate = Math.Abs(accelMagnitude - 1.0f) <= GyroMouseStillAccelTolerance &&
                                   MaxAbsComponent(residual) <= stillRateLimit;
 
@@ -1390,9 +1408,11 @@ namespace BetterJoyForCemu {
         // orientation. This intentionally does not touch activeData/gyr_neutral/acc calibration:
         // recentering is a coordinate-frame change, while calibration estimates sensor offsets.
         private void RecenterGyro() {
+            CaptureGyroMouseNeutralFrame();
+
             // Throw away the old gravity frame as well as pending mouse motion. The next IMU
-            // sub-sample seeds gravity directly from the pose held at the recenter edge. Bias is
-            // intentionally retained: orientation reset and zero-rate calibration are separate.
+            // sub-sample seeds gravity in the newly captured grip frame. Bias is intentionally
+            // retained in the underlying sensor frame: orientation and calibration are separate.
             ResetGyroMouseMotionState(true);
             ResetGyroMouseBiasWindow();
             AHRS.Recenter();
@@ -1408,6 +1428,8 @@ namespace BetterJoyForCemu {
             if (Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner))
                 return;
 
+            gyroMouseNeutralX = new Vector2(1.0f, 0.0f);
+            gyroMouseNeutralY = new Vector2(0.0f, 1.0f);
             ResetGyroMouseMotionState(true);
             ResetGyroMouseBiasEstimator();
             AHRS.Reset();
@@ -1425,29 +1447,57 @@ namespace BetterJoyForCemu {
             // BetterJoy parses Nintendo packet axes as X=raw Z, Y=raw X, Z=raw Y and applies
             // controller-side signs. This proper rotation converts that established frame to the
             // same Y-up convention JoyShockLibrary feeds into GamepadMotionHelpers.
-            gyroMouseAccel = new Vector3(-acc_g.Y, acc_g.Z, -acc_g.X);
-            gyroMouseGyroRate = new Vector3(gyr_g.Y, -gyr_g.Z, -gyr_g.X);
+            gyroMouseSensorAccel = new Vector3(-acc_g.Y, acc_g.Z, -acc_g.X);
+            gyroMouseSensorRate = new Vector3(gyr_g.Y, -gyr_g.Z, -gyr_g.X);
 
             if (other == null && !isPro) {
-                float oldAccelX = gyroMouseAccel.X;
-                float oldAccelZ = gyroMouseAccel.Z;
-                float oldGyroX = gyroMouseGyroRate.X;
-                float oldGyroZ = gyroMouseGyroRate.Z;
+                float oldAccelX = gyroMouseSensorAccel.X;
+                float oldAccelZ = gyroMouseSensorAccel.Z;
+                float oldGyroX = gyroMouseSensorRate.X;
+                float oldGyroZ = gyroMouseSensorRate.Z;
 
                 if (isLeft) {
                     // +90 degrees around canonical up: (x,y,z) -> (z,y,-x).
-                    gyroMouseAccel.X = oldAccelZ;
-                    gyroMouseAccel.Z = -oldAccelX;
-                    gyroMouseGyroRate.X = oldGyroZ;
-                    gyroMouseGyroRate.Z = -oldGyroX;
+                    gyroMouseSensorAccel.X = oldAccelZ;
+                    gyroMouseSensorAccel.Z = -oldAccelX;
+                    gyroMouseSensorRate.X = oldGyroZ;
+                    gyroMouseSensorRate.Z = -oldGyroX;
                 } else {
                     // -90 degrees around canonical up: (x,y,z) -> (-z,y,x).
-                    gyroMouseAccel.X = -oldAccelZ;
-                    gyroMouseAccel.Z = oldAccelX;
-                    gyroMouseGyroRate.X = -oldGyroZ;
-                    gyroMouseGyroRate.Z = oldGyroX;
+                    gyroMouseSensorAccel.X = -oldAccelZ;
+                    gyroMouseSensorAccel.Z = oldAccelX;
+                    gyroMouseSensorRate.X = -oldGyroZ;
+                    gyroMouseSensorRate.Z = oldGyroX;
                 }
             }
+        }
+
+        private Vector3 TransformGyroMouseToNeutralFrame(Vector3 value) {
+            return new Vector3(
+                gyroMouseNeutralX.X * value.X + gyroMouseNeutralX.Y * value.Y,
+                gyroMouseNeutralY.X * value.X + gyroMouseNeutralY.Y * value.Y,
+                value.Z);
+        }
+
+        private void CaptureGyroMouseNeutralFrame() {
+            float accelLength = gyroMouseSensorAccel.Length();
+            if (accelLength <= 0.0f)
+                return;
+
+            Vector3 down = -gyroMouseSensorAccel / accelLength;
+            float projectedLength = (float)Math.Sqrt(down.X * down.X + down.Y * down.Y);
+            if (projectedLength <= 0.1f)
+                return; // pointing almost vertically: grip roll is undefined
+
+            float inverseLength = 1.0f / projectedLength;
+            float downX = down.X * inverseLength;
+            float downY = down.Y * inverseLength;
+
+            // Express future samples in axes where the current projected gravity is (0,-1).
+            // That makes the user's present grip define local pitch/up-down without altering the
+            // forward Z axis or allowing acceleration itself to create mouse displacement.
+            gyroMouseNeutralX = new Vector2(-downY, downX);
+            gyroMouseNeutralY = new Vector2(-downX, -downY);
         }
 
         private void SmoothGyroMouseRates(ref float yawRate, ref float pitchRate,
@@ -1511,9 +1561,15 @@ namespace BetterJoyForCemu {
             // Keep learning the selected controller's zero-rate bias while gyro-mouse is
             // inactive, so activating it after the controller has been resting does not begin
             // with half a second of cursor crawl.
-            Vector3 mouseGyroRate = UseFilteredIMU ? gyroMouseGyroRate : gyr_g;
-            if (UseFilteredIMU)
-                mouseGyroRate = ApplyGyroMouseStationaryBias(mouseGyroRate);
+            bool gyroPointerActive = Config.Value("active_gyro") == "0" || active_gyro;
+            Vector3 mouseGyroRate = gyr_g;
+            Vector3 mouseAccel = acc_g;
+            if (UseFilteredIMU) {
+                Vector3 calibratedSensorRate = ApplyGyroMouseStationaryBias(
+                    gyroMouseSensorRate, !gyroPointerActive);
+                mouseGyroRate = TransformGyroMouseToNeutralFrame(calibratedSensorRate);
+                mouseAccel = TransformGyroMouseToNeutralFrame(gyroMouseSensorAccel);
+            }
 
             const float subSamplePeriod = 0.005f;
             const float degToRad = 0.0174533f;
@@ -1522,9 +1578,9 @@ namespace BetterJoyForCemu {
             // Player Space fuses acceleration into the coordinate basis only; this call cannot
             // add cursor displacement.
             if (UseFilteredIMU)
-                gyroMousePlayerSpace.Update(mouseGyroRate, gyroMouseAccel, subSamplePeriod);
+                gyroMousePlayerSpace.Update(mouseGyroRate, mouseAccel, subSamplePeriod);
 
-            if (!(Config.Value("active_gyro") == "0" || active_gyro)) {
+            if (!gyroPointerActive) {
                 pendingMouseDx = pendingMouseDy = 0.0f;
                 filteredGyroMouseRate = Vector2.Zero;
                 filteredGyroMouseRateInitialized = false;
