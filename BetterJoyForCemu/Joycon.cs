@@ -50,6 +50,41 @@ namespace BetterJoyForCemu {
         }
         public bool active_gyro = false;
 
+        // Tracks the active_gyro combo's held state from the previous packet, so toggle mode
+        // (GyroHoldToggle == false) can flip on the rising edge only - the moment the combo
+        // first becomes fully held, not every packet it stays held.
+        private bool prevActiveGyroComboHeld = false;
+
+        // Same idea for reset_mouse - a one-shot action needs the rising edge only, or it would
+        // keep re-centering every packet for as long as the bind stays held.
+        private bool prevResetMouseComboHeld = false;
+
+        // A bind is one or more "joy_N"/"key_N"/"mse_N" parts joined with "+" (a single part is
+        // just a combo of one) - true only when every part is currently held at once. Controller
+        // parts check this Joycon's own buttons (and its pair partner's, if joined, matching how
+        // every other joy_ bind here already treats a pair as one logical controller);
+        // keyboard/mouse parts check InputState, fed from Program.OnKeyDown/OnKeyUp/
+        // OnMouseButtonDown/OnMouseButtonUp - the same unified entry points that already work in
+        // both GUI and service mode.
+        private bool IsComboHeld(string combo) {
+            foreach (string part in combo.Split('+')) {
+                if (part.StartsWith("joy_")) {
+                    int i = Int32.Parse(part.Substring(4));
+                    if (!(buttons[i] || (other != null && other != this && other.buttons[i])))
+                        return false;
+                } else if (part.StartsWith("key_")) {
+                    if (!InputState.IsKeyHeld(Int32.Parse(part.Substring(4))))
+                        return false;
+                } else if (part.StartsWith("mse_")) {
+                    if (!InputState.IsMouseButtonHeld(Int32.Parse(part.Substring(4))))
+                        return false;
+                } else {
+                    return false; // malformed/unknown part - fail closed rather than ignore it
+                }
+            }
+            return true;
+        }
+
         private long inactivity = Stopwatch.GetTimestamp();
 
         public bool send = true;
@@ -298,7 +333,18 @@ namespace BetterJoyForCemu {
         }
 
         public string serial_number;
-        bool thirdParty = false;
+
+        // True for anything BetterJoy attached because it matched the 3rd-party-controller
+        // allowlist (Program.thirdPartyCons - see CheckForNewControllers), rather than being a
+        // real Joy-Con/Pro/SNES/N64 device matched by VID/PID directly. Notably, this also
+        // catches BetterJoy's OWN virtual XInput/DS4 output controller getting misidentified as a
+        // new physical controller when AutoAddControllers is on - Windows exposes ViGEmBus's
+        // emulated pad through a HID interface too (for DirectInput compatibility), which passes
+        // the same generic "is this a gamepad" usage-page/usage check real third-party controllers
+        // do. Left attached (it may still be something the user genuinely wants passthrough for),
+        // but button-mapping detection (Reassign.cs/HeadlessJoyconHost.cs) excludes it - otherwise
+        // every physical press doubles into a second "press" mirrored from the virtual pad.
+        public bool thirdParty = false;
 
         private float[] activeData;
         static float AHRS_beta = float.Parse(ConfigurationManager.AppSettings["AHRS_beta"]);
@@ -718,49 +764,59 @@ namespace BetterJoyForCemu {
 
         bool dragToggle = Boolean.Parse(ConfigurationManager.AppSettings["DragToggle"]);
         Dictionary<int, bool> mouse_toggle_btn = new Dictionary<int, bool>();
+
+        // s can be a "+"-joined combo (see Reassign's combo capture) - here that means "simulate
+        // all of these together", e.g. a capture bind of "key_17+key_67" presses Ctrl+C. Any
+        // joy_ part is silently skipped - there's no "press another virtual controller button"
+        // output, that's what SimulateContinous below is for instead.
         private void Simulate(string s, bool click = true, bool up = false) {
-            if (s.StartsWith("key_")) {
-                int key = Int32.Parse(s.Substring(4));
-                if (click) {
-                    form.SimulateKeyClick(key);
-                } else {
-                    if (up) {
-                        form.SimulateKeyRelease(key);
-                    } else {
-                        form.SimulateKeyHold(key);
-                    }
-                }
-            } else if (s.StartsWith("mse_")) {
-                int button = Int32.Parse(s.Substring(4));
-                if (click) {
-                    form.SimulateButtonClick(button);
-                } else {
-                    if (dragToggle) {
-                        if (!up) {
-                            bool release;
-                            mouse_toggle_btn.TryGetValue(button, out release);
-                            if (release)
-                                form.SimulateButtonRelease(button);
-                            else
-                                form.SimulateButtonHold(button);
-                            mouse_toggle_btn[button] = !release;
-                        }
+            foreach (string part in s.Split('+')) {
+                if (part.StartsWith("key_")) {
+                    int key = Int32.Parse(part.Substring(4));
+                    if (click) {
+                        form.SimulateKeyClick(key);
                     } else {
                         if (up) {
-                            form.SimulateButtonRelease(button);
+                            form.SimulateKeyRelease(key);
                         } else {
-                            form.SimulateButtonHold(button);
+                            form.SimulateKeyHold(key);
+                        }
+                    }
+                } else if (part.StartsWith("mse_")) {
+                    int button = Int32.Parse(part.Substring(4));
+                    if (click) {
+                        form.SimulateButtonClick(button);
+                    } else {
+                        if (dragToggle) {
+                            if (!up) {
+                                bool release;
+                                mouse_toggle_btn.TryGetValue(button, out release);
+                                if (release)
+                                    form.SimulateButtonRelease(button);
+                                else
+                                    form.SimulateButtonHold(button);
+                                mouse_toggle_btn[button] = !release;
+                            }
+                        } else {
+                            if (up) {
+                                form.SimulateButtonRelease(button);
+                            } else {
+                                form.SimulateButtonHold(button);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // For Joystick->Joystick inputs
+        // For Joystick->Joystick inputs - s can likewise be a "+"-joined combo; every joy_ part
+        // gets OR'd in (mse_/key_ parts are Simulate's job above, not this one's).
         private void SimulateContinous(int origin, string s) {
-            if (s.StartsWith("joy_")) {
-                int button = Int32.Parse(s.Substring(4));
-                buttons[button] |= buttons[origin];
+            foreach (string part in s.Split('+')) {
+                if (part.StartsWith("joy_")) {
+                    int button = Int32.Parse(part.Substring(4));
+                    buttons[button] |= buttons[origin];
+                }
             }
         }
 
@@ -908,18 +964,21 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            string res_val = Config.Value("active_gyro");
-            if (res_val.StartsWith("joy_")) {
-                int i = Int32.Parse(res_val.Substring(4));
+            // active_gyro can be a single bind or a "+"-joined combo mixing controller/keyboard/
+            // mouse inputs together (see IsComboHeld) - either way it's evaluated fresh every
+            // packet rather than reacting to individual key/button transitions, since a combo
+            // needs the simultaneous state of everything in it, not just whichever one last
+            // changed. "0" (unbound) trivially holds true for an empty combo, which would
+            // otherwise flip active_gyro on every packet - guarded against explicitly.
+            string activeGyroCombo = Config.Value("active_gyro");
+            if (activeGyroCombo != "0") {
+                bool comboHeld = IsComboHeld(activeGyroCombo);
                 if (GyroHoldToggle) {
-                    if (buttons_down[i] || (other != null && other.buttons_down[i]))
-                        active_gyro = true;
-                    else if (buttons_up[i] || (other != null && other.buttons_up[i]))
-                        active_gyro = false;
-                } else {
-                    if (buttons_down[i] || (other != null && other.buttons_down[i]))
-                        active_gyro = !active_gyro;
+                    active_gyro = comboHeld;
+                } else if (comboHeld && !prevActiveGyroComboHeld) {
+                    active_gyro = !active_gyro;
                 }
+                prevActiveGyroComboHeld = comboHeld;
             }
 
             if (extraGyroFeature.Substring(0, 3) == "joy") {
@@ -952,16 +1011,68 @@ namespace BetterJoyForCemu {
                     }
 
                     form.SimulateMoveBy(dx, dy);
+
+                    SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
+                    SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right);
+                    SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle);
+                    SimulateGyroMouseScroll("scroll_up", true);
+                    SimulateGyroMouseScroll("scroll_down", false);
                 }
 
-                // reset mouse position to centre of primary monitor
-                res_val = Config.Value("reset_mouse");
-                if (res_val.StartsWith("joy_")) {
-                    int i = Int32.Parse(res_val.Substring(4));
-                    if (buttons_down[i] || (other != null && other.buttons_down[i]))
+                // Reset mouse position to centre of primary monitor - a one-shot action, not a
+                // held state like active_gyro, so this only ever needs the rising edge: fire once
+                // when the bind (single input or combo, see IsComboHeld) transitions from not-
+                // fully-held to fully-held, not again until it's released and re-pressed.
+                string resetMouseVal = Config.Value("reset_mouse");
+                if (resetMouseVal != "0") {
+                    bool resetMouseHeld = IsComboHeld(resetMouseVal);
+                    if (resetMouseHeld && !prevResetMouseComboHeld)
                         form.SimulateMoveToScreenCenter();
+                    prevResetMouseComboHeld = resetMouseHeld;
                 }
             }
+        }
+
+        // left_click/right_click/center_click/scroll_up/scroll_down (see App.config's comment on
+        // them) - bindable controller buttons that simulate a mouse action, reachable only from
+        // inside the same "gyro-mouse is actually active" block as the cursor movement above, so
+        // they're inert the rest of the time rather than stealing a button from its normal game
+        // mapping. Read fresh from AppSettings each call, not cached in a field the way most
+        // other settings here are - so a newly-bound key takes effect immediately instead of
+        // needing the controller to reconnect first. Can be a combo like every other bind now
+        // (see Reassign.cs), which IsComboHeld handles - this used to be a bare
+        // Int32.Parse(val.Substring(4)) on the whole value, which crashed the poll thread with a
+        // FormatException the moment val held a "+"-joined combo instead of one plain joy_N.
+        private readonly Dictionary<string, bool> gyroMouseComboHeld = new Dictionary<string, bool>();
+
+        private void SimulateGyroMouseButton(string configKey, int buttonCode) {
+            string val = ConfigurationManager.AppSettings[configKey] ?? "0";
+            if (val == "0")
+                return;
+
+            bool held = IsComboHeld(val);
+            bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
+            gyroMouseComboHeld[configKey] = held;
+
+            if (held && !wasHeld)
+                form.SimulateButtonHold(buttonCode);
+            else if (!held && wasHeld)
+                form.SimulateButtonRelease(buttonCode);
+        }
+
+        // Scroll has no hold/release equivalent - just a discrete tick per press, matching a
+        // physical scroll wheel's own click detents rather than a continuous rate while held.
+        private void SimulateGyroMouseScroll(string configKey, bool up) {
+            string val = ConfigurationManager.AppSettings[configKey] ?? "0";
+            if (val == "0")
+                return;
+
+            bool held = IsComboHeld(val);
+            bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
+            gyroMouseComboHeld[configKey] = held;
+
+            if (held && !wasHeld)
+                form.SimulateScroll(up);
         }
 
         // Guards RetireDuplicateConnections() above so it only ever runs once per controller,

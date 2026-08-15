@@ -108,7 +108,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_capture.Location = new System.Drawing.Point(105, 12);
             this.btn_capture.Name = "btn_capture";
-            this.btn_capture.Size = new System.Drawing.Size(75, 23);
+            this.btn_capture.Size = new System.Drawing.Size(130, 23);
             this.btn_capture.TabIndex = 0;
             this.btn_capture.UseVisualStyleBackColor = true;
             // 
@@ -136,7 +136,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_home.Location = new System.Drawing.Point(105, 41);
             this.btn_home.Name = "btn_home";
-            this.btn_home.Size = new System.Drawing.Size(75, 23);
+            this.btn_home.Size = new System.Drawing.Size(130, 23);
             this.btn_home.TabIndex = 3;
             this.btn_home.UseVisualStyleBackColor = true;
             // 
@@ -154,7 +154,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_sl_l.Location = new System.Drawing.Point(105, 70);
             this.btn_sl_l.Name = "btn_sl_l";
-            this.btn_sl_l.Size = new System.Drawing.Size(75, 23);
+            this.btn_sl_l.Size = new System.Drawing.Size(130, 23);
             this.btn_sl_l.TabIndex = 5;
             this.btn_sl_l.UseVisualStyleBackColor = true;
             // 
@@ -172,7 +172,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_sr_l.Location = new System.Drawing.Point(105, 99);
             this.btn_sr_l.Name = "btn_sr_l";
-            this.btn_sr_l.Size = new System.Drawing.Size(75, 23);
+            this.btn_sr_l.Size = new System.Drawing.Size(130, 23);
             this.btn_sr_l.TabIndex = 7;
             this.btn_sr_l.UseVisualStyleBackColor = true;
             // 
@@ -190,7 +190,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_sl_r.Location = new System.Drawing.Point(105, 128);
             this.btn_sl_r.Name = "btn_sl_r";
-            this.btn_sl_r.Size = new System.Drawing.Size(75, 23);
+            this.btn_sl_r.Size = new System.Drawing.Size(130, 23);
             this.btn_sl_r.TabIndex = 9;
             this.btn_sl_r.UseVisualStyleBackColor = true;
             // 
@@ -208,7 +208,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_sr_r.Location = new System.Drawing.Point(105, 157);
             this.btn_sr_r.Name = "btn_sr_r";
-            this.btn_sr_r.Size = new System.Drawing.Size(75, 23);
+            this.btn_sr_r.Size = new System.Drawing.Size(130, 23);
             this.btn_sr_r.TabIndex = 11;
             this.btn_sr_r.UseVisualStyleBackColor = true;
             // 
@@ -246,7 +246,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_reset_mouse.Location = new System.Drawing.Point(105, 218);
             this.btn_reset_mouse.Name = "btn_reset_mouse";
-            this.btn_reset_mouse.Size = new System.Drawing.Size(75, 23);
+            this.btn_reset_mouse.Size = new System.Drawing.Size(130, 23);
             this.btn_reset_mouse.TabIndex = 15;
             this.btn_reset_mouse.UseVisualStyleBackColor = true;
             // 
@@ -264,7 +264,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_active_gyro.Location = new System.Drawing.Point(105, 247);
             this.btn_active_gyro.Name = "btn_active_gyro";
-            this.btn_active_gyro.Size = new System.Drawing.Size(75, 23);
+            this.btn_active_gyro.Size = new System.Drawing.Size(130, 23);
             this.btn_active_gyro.TabIndex = 18;
             this.btn_active_gyro.UseVisualStyleBackColor = true;
             // 
@@ -282,7 +282,7 @@ namespace BetterJoyForCemu {
             // 
             this.btn_shake.Location = new System.Drawing.Point(105, 186);
             this.btn_shake.Name = "btn_shake";
-            this.btn_shake.Size = new System.Drawing.Size(75, 23);
+            this.btn_shake.Size = new System.Drawing.Size(130, 23);
             this.btn_shake.TabIndex = 19;
             this.btn_shake.UseVisualStyleBackColor = true;
             // 
@@ -290,7 +290,7 @@ namespace BetterJoyForCemu {
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(192, 338);
+            this.ClientSize = new System.Drawing.Size(250, 338);
             this.Controls.Add(this.lbl_shake);
             this.Controls.Add(this.btn_shake);
             this.Controls.Add(this.btn_active_gyro);

@@ -33,6 +33,21 @@ namespace BetterJoyForCemu {
         private const ushort product_snes = 0x2017;
         private const ushort product_n64 = 0x2019;
 
+        // ViGEmBus's default emulated identities (CreateXbox360Controller()/CreateDS4Controller()
+        // are called with no VID/PID override anywhere in this codebase - see
+        // Controller.OutputControllerXbox360/OutputControllerDualShock4 - so BetterJoy's own
+        // virtual output always shows up under these). Windows exposes that virtual pad through a
+        // HID interface too, for DirectInput compatibility, which otherwise passes the same
+        // generic "is this a gamepad" usage-page/usage check real controllers do - letting
+        // AutoAddControllers mistake BetterJoy's own output for a brand new physical controller,
+        // whose raw input then just mirrors whatever BetterJoy already sent it, one poll tick
+        // later. Checked ahead of the 3rd-party allowlist/auto-add below, not after, so this never
+        // becomes a Joycon object in the first place, however AutoAddControllers is configured.
+        private const ushort vigemXbox360VendorId = 0x045E;
+        private const ushort vigemXbox360ProductId = 0x028E;
+        private const ushort vigemDs4VendorId = 0x054C;
+        private const ushort vigemDs4ProductId = 0x05C4;
+
         public ConcurrentList<Joycon> j { get; private set; } // Array of all connected Joy-Cons
         static JoyconManager instance;
 
@@ -358,6 +373,16 @@ namespace BetterJoyForCemu {
                 if (enumerate.serial_number == null) {
                     ptr = enumerate.next; // can't believe it took me this long to figure out why USB connections used up so much CPU.
                                           // it was getting stuck in an inf loop here!
+                    continue;
+                }
+
+                // BetterJoy's own virtual output, mistaken for a brand new physical controller -
+                // see the constants above. Unlike the blacklist case below, deliberately NOT
+                // hidden via HidHide: other programs (games, Steam) are supposed to see this as a
+                // normal Xbox360/DS4 controller, that's the entire point of it existing.
+                if ((enumerate.vendor_id == vigemXbox360VendorId && enumerate.product_id == vigemXbox360ProductId) ||
+                    (enumerate.vendor_id == vigemDs4VendorId && enumerate.product_id == vigemDs4ProductId)) {
+                    ptr = enumerate.next;
                     continue;
                 }
 
@@ -739,51 +764,19 @@ namespace BetterJoyForCemu {
             form.AppendTextBox("All systems go\r\n");
         }
 
-        // Decision logic for the "reset_mouse"/"active_gyro" keyboard/mouse-button binds - kept
-        // independent of *how* the raw key/button event was observed, so both GUI mode's direct
-        // WindowsInput.Capture.Global hook and service mode's pipe-forwarded events from the
-        // session-launched helper can feed into the exact same code.
-        public static void OnKeyDown(int keyCode) {
-            string res_val = Config.Value("reset_mouse");
-            if (res_val.StartsWith("key_"))
-                if (keyCode == Int32.Parse(res_val.Substring(4)))
-                    form.SimulateMoveToScreenCenter();
-
-            res_val = Config.Value("active_gyro");
-            if (res_val.StartsWith("key_"))
-                if (keyCode == Int32.Parse(res_val.Substring(4)))
-                    foreach (var i in mgr.j)
-                        i.active_gyro = true;
-        }
-
-        public static void OnKeyUp(int keyCode) {
-            string res_val = Config.Value("active_gyro");
-            if (res_val.StartsWith("key_"))
-                if (keyCode == Int32.Parse(res_val.Substring(4)))
-                    foreach (var i in mgr.j)
-                        i.active_gyro = false;
-        }
-
-        public static void OnMouseButtonDown(int buttonCode) {
-            string res_val = Config.Value("reset_mouse");
-            if (res_val.StartsWith("mse_"))
-                if (buttonCode == Int32.Parse(res_val.Substring(4)))
-                    form.SimulateMoveToScreenCenter();
-
-            res_val = Config.Value("active_gyro");
-            if (res_val.StartsWith("mse_"))
-                if (buttonCode == Int32.Parse(res_val.Substring(4)))
-                    foreach (var i in mgr.j)
-                        i.active_gyro = true;
-        }
-
-        public static void OnMouseButtonUp(int buttonCode) {
-            string res_val = Config.Value("active_gyro");
-            if (res_val.StartsWith("mse_"))
-                if (buttonCode == Int32.Parse(res_val.Substring(4)))
-                    foreach (var i in mgr.j)
-                        i.active_gyro = false;
-        }
+        // reset_mouse/active_gyro used to be decided here (single key_/mse_ trigger only), but
+        // now that both support a "+"-joined combo mixing controller/keyboard/mouse inputs
+        // together (see Joycon.IsComboHeld), they need simultaneous visibility into all three at
+        // once - evaluated once per packet in Joycon.DoThingsWithButtons instead, which already
+        // runs per connected controller and can check its own buttons directly. These handlers
+        // now just feed InputState so that check has an up-to-date view of which keys/mouse
+        // buttons are currently held - kept independent of *how* the raw event was observed, so
+        // both GUI mode's direct WindowsInput.Capture.Global hook and service mode's pipe-
+        // forwarded events from the session-launched helper feed the exact same tracker.
+        public static void OnKeyDown(int keyCode) => InputState.KeyDown(keyCode);
+        public static void OnKeyUp(int keyCode) => InputState.KeyUp(keyCode);
+        public static void OnMouseButtonDown(int buttonCode) => InputState.MouseDown(buttonCode);
+        public static void OnMouseButtonUp(int buttonCode) => InputState.MouseUp(buttonCode);
 
         public static void Stop() {
             // Stop the background scan first - otherwise it can still be adding to

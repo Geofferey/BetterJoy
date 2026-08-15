@@ -218,6 +218,7 @@ namespace BetterJoyForCemu {
         public void SimulateMoveTo(int x, int y) => SendMessage(InputMessageType.SimulateMoveTo, x, y);
         public void SimulateMoveBy(int dx, int dy) => SendMessage(InputMessageType.SimulateMoveBy, dx, dy);
         public void SimulateMoveToScreenCenter() => SendMessage(InputMessageType.SimulateMoveToScreenCenter);
+        public void SimulateScroll(bool up) => SendMessage(InputMessageType.SimulateScroll, up ? 1 : 0);
 
         // ---------------------------------------------------------------------------------
         // GUI control pipe (live status + rumble test/join-split/calibration commands) - see
@@ -310,6 +311,12 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.CalibrationReady:
                             reader.ReadByte(); // padId - only one calibration can be in progress at a time, guarded by calibrationInProgress
                             CompleteCalibReady();
+                            break;
+                        case ControlMessageType.StartButtonCapture:
+                            StartButtonCapture();
+                            break;
+                        case ControlMessageType.StopButtonCapture:
+                            StopButtonCapture();
                             break;
                     }
                 }
@@ -504,6 +511,66 @@ namespace BetterJoyForCemu {
                 UiMode = uiMode,
                 Count = count,
             }));
+        }
+
+        // Server-side counterpart to Reassign.JoyPoll_Tick's local polling - the GUI has no
+        // Joycon instances of its own to poll when it's deferred hardware ownership here, so
+        // this does the same rising/falling edge detection against Program.mgr.j (which IS
+        // populated in this process) and pushes each transition over the control pipe instead of
+        // acting on it directly. System.Timers.Timer, not a WinForms Timer - this process has no
+        // message pump for a WM_TIMER-based timer to ever fire on.
+        private System.Timers.Timer buttonCapturePoll;
+        private readonly Dictionary<Joycon, bool[]> buttonCapturePrev = new Dictionary<Joycon, bool[]>();
+
+        private void StartButtonCapture() {
+            if (buttonCapturePoll != null)
+                return; // already running for this (or another) connected GUI
+
+            buttonCapturePrev.Clear();
+            buttonCapturePoll = new System.Timers.Timer(30);
+            buttonCapturePoll.Elapsed += (s, e) => PollButtonCapture();
+            buttonCapturePoll.AutoReset = true;
+            buttonCapturePoll.Start();
+        }
+
+        private void StopButtonCapture() {
+            buttonCapturePoll?.Stop();
+            buttonCapturePoll?.Dispose();
+            buttonCapturePoll = null;
+            buttonCapturePrev.Clear();
+        }
+
+        private void PollButtonCapture() {
+            if (Program.mgr == null)
+                return;
+
+            int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
+            foreach (Joycon jc in Program.mgr.j) {
+                // See the identical skip in Reassign.cs's JoyPoll_Tick - a joined pair's two
+                // halves cross-reference each other's raw buttons, so polling both independently
+                // reports one physical press as two (e.g. "DPAD_DOWN+B" for a single B press).
+                // The left half alone already has a complete, correctly-labeled view of the pair.
+                if (jc.other != null && jc.other != jc && !jc.isLeft)
+                    continue;
+
+                if (!buttonCapturePrev.TryGetValue(jc, out bool[] prev)) {
+                    prev = new bool[buttonCount];
+                    for (int bi = 0; bi < buttonCount; bi++)
+                        prev[bi] = jc.GetButton((Joycon.Button)bi);
+                    buttonCapturePrev[jc] = prev;
+                    continue; // baseline only - don't report a controller's already-held buttons as fresh presses
+                }
+
+                for (int bi = 0; bi < buttonCount; bi++) {
+                    bool now = jc.GetButton((Joycon.Button)bi);
+                    if (now == prev[bi])
+                        continue;
+                    prev[bi] = now;
+                    int capturedBi = bi;
+                    bool capturedNow = now;
+                    SendControlMessage(w => ServiceControlIpc.WriteButtonTransition(w, capturedBi, capturedNow));
+                }
+            }
         }
 
         private void BroadcastSnapshot() {

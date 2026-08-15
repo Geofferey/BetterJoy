@@ -42,5 +42,10 @@ namespace BetterJoyForCemu {
         // for a Windows Service is the session-launched helper, not the service process itself.
         // Each implementation resolves "center" in its own context.
         void SimulateMoveToScreenCenter();
+
+        // One scroll wheel tick - up (true) or down (false). Left/right/middle click reuse the
+        // existing SimulateButtonHold/Release above (ButtonCode.Left/Right/Middle); scroll has no
+        // hold/release equivalent, just a discrete tick per press.
+        void SimulateScroll(bool up);
     }
 }

@@ -318,6 +318,10 @@ namespace BetterJoyForCemu {
             WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
         }
 
+        public void SimulateScroll(bool up) {
+            WindowsInput.Simulate.Events().Scroll(WindowsInput.Events.ButtonCode.VScroll, up ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+        }
+
         private static bool IsBetterJoyServiceRunning() {
             try {
                 using (var sc = new ServiceController("BetterJoy")) {
@@ -1181,7 +1185,10 @@ namespace BetterJoyForCemu {
         }
 
         private void btn_reassign_open_Click(object sender, EventArgs e) {
-            Reassign mapForm = new Reassign();
+            // isRemoteMode's serviceClient, not null - Reassign uses it to relay controller-
+            // button presses for its "left-click then press" auto-detect, which otherwise has no
+            // Joycon instances of its own to poll when the service owns the hardware.
+            Reassign mapForm = new Reassign(isRemoteMode ? serviceClient : null);
             mapForm.ShowDialog();
         }
 

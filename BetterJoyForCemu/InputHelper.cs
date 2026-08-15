@@ -114,6 +114,9 @@ namespace BetterJoyForCemu {
                 case InputMessageType.SimulateMoveToScreenCenter:
                     WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
                     break;
+                case InputMessageType.SimulateScroll:
+                    WindowsInput.Simulate.Events().Scroll(WindowsInput.Events.ButtonCode.VScroll, msg.A != 0 ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+                    break;
             }
         }
     }

@@ -14,6 +14,7 @@ namespace BetterJoyForCemu {
         CalibrationComplete = 3,
         CalibrationFailed = 4,
         CalibrationStep = 5,
+        ButtonTransition = 6, // a connected controller's button just went down/up - see Reassign
 
         // GUI -> service
         RequestSnapshot = 10,
@@ -21,6 +22,8 @@ namespace BetterJoyForCemu {
         JoinOrSplit = 12,
         StartCalibration = 13,
         CalibrationReady = 14, // user clicked "OK" on the current step - see CalibrationStep
+        StartButtonCapture = 15, // Map Special Buttons dialog opened - start pushing ButtonTransition
+        StopButtonCapture = 16, // dialog closed - stop
     }
 
     public enum ControllerKind : byte {
@@ -79,6 +82,16 @@ namespace BetterJoyForCemu {
         public int Count; // only meaningful when UiMode == Countdown
     }
 
+    // A connected controller's button just went down or up - pushed only while a GUI has
+    // requested it (StartButtonCapture), so it costs nothing the rest of the time. Controller-
+    // agnostic on purpose, matching the local polling equivalent (Reassign.JoyPoll_Tick) and the
+    // existing joy_N bind format itself - a bind never distinguishes which physical controller
+    // pressed button N, so neither does this.
+    public struct ButtonTransitionInfo {
+        public int ButtonIndex;
+        public bool IsDown;
+    }
+
     public static class ServiceControlIpc {
         // Fixed and well-known (unlike the per-session input-helper pipe) - the GUI needs to
         // find this without being told a name, since it isn't the one that launched the service.
@@ -132,6 +145,20 @@ namespace BetterJoyForCemu {
                 Instruction = reader.ReadString(),
                 UiMode = (CalibStepUiMode)reader.ReadByte(),
                 Count = reader.ReadByte(),
+            };
+        }
+
+        public static void WriteButtonTransition(BinaryWriter writer, int buttonIndex, bool isDown) {
+            writer.Write((byte)ControlMessageType.ButtonTransition);
+            writer.Write((byte)buttonIndex);
+            writer.Write(isDown);
+            writer.Flush();
+        }
+
+        public static ButtonTransitionInfo ReadButtonTransition(BinaryReader reader) {
+            return new ButtonTransitionInfo {
+                ButtonIndex = reader.ReadByte(),
+                IsDown = reader.ReadBoolean(),
             };
         }
     }

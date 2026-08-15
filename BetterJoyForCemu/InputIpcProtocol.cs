@@ -26,6 +26,7 @@ namespace BetterJoyForCemu {
         SimulateMoveTo = 16,
         SimulateMoveBy = 17,
         SimulateMoveToScreenCenter = 18,
+        SimulateScroll = 19, // A: 1 = scroll up (Forwards), 0 = scroll down (Backwards)
     }
 
     // Fixed-size (9 byte) message: 1 byte type + two 4-byte ints. Simple and robust over a
