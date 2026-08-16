@@ -88,6 +88,13 @@ namespace BetterJoyForCemu {
                 menu_joy_buttons.Items.Add(temp);
             }
 
+            // Explicitly disabling a special mapping is different from middle-clicking it back
+            // to its default: Capture and Re-Centre Gyro have nonzero defaults, but the user may
+            // still want either feature completely unbound. Keep this action visually separated
+            // and permanently last after every physical controller-button choice.
+            menu_joy_buttons.Items.Add(new ToolStripSeparator());
+            menu_joy_buttons.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "0" });
+
             menu_joy_buttons.ItemClicked += Menu_joy_buttons_ItemClicked;
 
             specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
@@ -304,7 +311,13 @@ namespace BetterJoyForCemu {
             ToolStripItem clickedItem = e.ClickedItem;
 
             SplitButton caller = (SplitButton)c.Tag;
-            SetBindValue((string)caller.Tag, "joy_" + (clickedItem.Tag));
+            string value = clickedItem.Tag is int
+                ? "joy_" + clickedItem.Tag
+                : clickedItem.Tag as string;
+            if (value == null)
+                return;
+
+            SetBindValue((string)caller.Tag, value);
             GetPrettyName(caller);
         }
 
