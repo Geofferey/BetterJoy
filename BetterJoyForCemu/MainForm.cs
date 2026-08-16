@@ -322,6 +322,10 @@ namespace BetterJoyForCemu {
             desktopInput.CursorMoveBy(dx, dy);
         }
 
+        public void SimulateWrappedCursorMoveBy(int dx, int dy) {
+            desktopInput.WrappedCursorMoveBy(dx, dy);
+        }
+
         public void SimulateMoveToScreenCenter() {
             desktopInput.MoveToScreenCenter();
         }

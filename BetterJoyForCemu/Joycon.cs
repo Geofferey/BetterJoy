@@ -1026,6 +1026,7 @@ namespace BetterJoyForCemu {
         // capturing a test.
         bool GyroMouseDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDebugLogging"]);
         bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
+        bool GyroMouseScreenWrap = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseScreenWrap"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
         const float GyroMouseDefaultScreenTraversalDegrees = 45.0f;
@@ -1828,10 +1829,13 @@ namespace BetterJoyForCemu {
         }
 
         private void MoveGyroMouseBy(int dx, int dy) {
-            if (GyroMouseDirectCursor)
-                form.SimulateCursorMoveBy(dx, dy);
-            else
+            if (!GyroMouseDirectCursor) {
                 form.SimulateMoveBy(dx, dy);
+            } else if (GyroMouseScreenWrap) {
+                form.SimulateWrappedCursorMoveBy(dx, dy);
+            } else {
+                form.SimulateCursorMoveBy(dx, dy);
+            }
         }
 
         private void UpdateCanonicalGyroMouseImu() {

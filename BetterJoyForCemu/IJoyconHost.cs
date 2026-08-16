@@ -38,6 +38,7 @@ namespace BetterJoyForCemu {
         void SimulateMoveTo(int x, int y);
         void SimulateMoveBy(int dx, int dy);
         void SimulateCursorMoveBy(int dx, int dy);
+        void SimulateWrappedCursorMoveBy(int dx, int dy);
 
         // Deliberately not "SimulateMoveTo(screenWidth/2, screenHeight/2)" computed by the
         // caller - Screen.PrimaryScreen is only meaningful wherever the actual desktop is, which

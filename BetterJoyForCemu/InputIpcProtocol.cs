@@ -28,6 +28,7 @@ namespace BetterJoyForCemu {
         SimulateMoveToScreenCenter = 18,
         SimulateScroll = 19, // A: 1 = scroll up (Forwards), 0 = scroll down (Backwards)
         SimulateCursorMoveBy = 20, // Exact pixel delta; bypasses Windows relative-pointer scaling.
+        SimulateWrappedCursorMoveBy = 21, // Exact delta; wraps inside the cursor's current monitor.
     }
 
     // Fixed-size (9 byte) message: 1 byte type + two 4-byte ints. Simple and robust over a

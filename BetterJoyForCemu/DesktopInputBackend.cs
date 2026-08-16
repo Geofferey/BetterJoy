@@ -149,9 +149,18 @@ namespace BetterJoyForCemu {
         // back to Windows pointer acceleration. A cached position also lets movement continue on
         // the UAC secure desktop when Cursor.Position still reports the last normal-desktop point.
         public void CursorMoveBy(int dx, int dy) {
+            CursorMoveBy(dx, dy, false);
+        }
+
+        public void WrappedCursorMoveBy(int dx, int dy) {
+            CursorMoveBy(dx, dy, true);
+        }
+
+        private void CursorMoveBy(int dx, int dy, bool wrapAround) {
             // A LocalSystem service cannot observe the Winlogon desktop's Cursor.Position. HID
             // relative motion needs no desktop coordinates and is routed by Windows to whichever
-            // input desktop is active, so it is the safe pre-login equivalent of exact mode.
+            // input desktop is active, so it is the safe pre-login equivalent of exact mode. The
+            // interactive helper resumes wrapping after login, when monitor geometry is knowable.
             if (!allowDesktopFallback) {
                 MoveBy(dx, dy);
                 return;
@@ -164,11 +173,13 @@ namespace BetterJoyForCemu {
                     current = virtualCursor;
 
                 lastObservedCursor = observed;
-                Point target = ClampToVirtualScreen(new Point(current.X + dx, current.Y + dy));
+                Point target = wrapAround
+                    ? WrapToCurrentScreen(current, dx, dy)
+                    : ClampToVirtualScreen(new Point(current.X + dx, current.Y + dy));
                 if (TryMoveAbsolute(target))
                     return;
 
-                Cursor.Position = new Point(observed.X + dx, observed.Y + dy);
+                Cursor.Position = wrapAround ? target : new Point(observed.X + dx, observed.Y + dy);
             }
         }
 
@@ -323,6 +334,23 @@ namespace BetterJoyForCemu {
             return new Point(
                 Math.Max(bounds.Left, Math.Min(bounds.Right - 1, point.X)),
                 Math.Max(bounds.Top, Math.Min(bounds.Bottom - 1, point.Y)));
+        }
+
+        private static Point WrapToCurrentScreen(Point current, int dx, int dy) {
+            Rectangle bounds = Screen.FromPoint(current).Bounds;
+            return new Point(
+                WrapCoordinate((long)current.X + dx, bounds.Left, bounds.Width),
+                WrapCoordinate((long)current.Y + dy, bounds.Top, bounds.Height));
+        }
+
+        private static int WrapCoordinate(long value, int minimum, int length) {
+            if (length <= 1)
+                return minimum;
+
+            long offset = (value - minimum) % length;
+            if (offset < 0)
+                offset += length;
+            return minimum + (int)offset;
         }
 
         private static ushort NormalizeCoordinate(int value, int minimum, int length) {

@@ -117,6 +117,9 @@ namespace BetterJoyForCemu {
                 case InputMessageType.SimulateCursorMoveBy:
                     desktopInput.CursorMoveBy(msg.A, msg.B);
                     break;
+                case InputMessageType.SimulateWrappedCursorMoveBy:
+                    desktopInput.WrappedCursorMoveBy(msg.A, msg.B);
+                    break;
                 case InputMessageType.SimulateMoveToScreenCenter:
                     desktopInput.MoveToScreenCenter();
                     break;

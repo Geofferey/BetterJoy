@@ -252,6 +252,8 @@ namespace BetterJoyForCemu {
         private bool hasPendingMove;
         private int pendingCursorMoveDx, pendingCursorMoveDy;
         private bool hasPendingCursorMove;
+        private int pendingWrappedCursorMoveDx, pendingWrappedCursorMoveDy;
+        private bool hasPendingWrappedCursorMove;
 
         public HeadlessJoyconHost() {
             new Thread(PipeWriterLoop) { IsBackground = true, Name = "InputPipeWriter" }.Start();
@@ -270,29 +272,37 @@ namespace BetterJoyForCemu {
         }
 
         private void FlushPendingMove() {
-            int dx, dy, cursorDx, cursorDy;
-            bool sendRelative, sendCursor;
+            int dx, dy, cursorDx, cursorDy, wrappedCursorDx, wrappedCursorDy;
+            bool sendRelative, sendCursor, sendWrappedCursor;
             lock (pendingMoveLock) {
-                if (!hasPendingMove && !hasPendingCursorMove)
+                if (!hasPendingMove && !hasPendingCursorMove && !hasPendingWrappedCursorMove)
                     return;
                 dx = pendingMoveDx;
                 dy = pendingMoveDy;
                 cursorDx = pendingCursorMoveDx;
                 cursorDy = pendingCursorMoveDy;
+                wrappedCursorDx = pendingWrappedCursorMoveDx;
+                wrappedCursorDy = pendingWrappedCursorMoveDy;
                 sendRelative = hasPendingMove;
                 sendCursor = hasPendingCursorMove;
+                sendWrappedCursor = hasPendingWrappedCursorMove;
                 pendingMoveDx = 0;
                 pendingMoveDy = 0;
                 pendingCursorMoveDx = 0;
                 pendingCursorMoveDy = 0;
+                pendingWrappedCursorMoveDx = 0;
+                pendingWrappedCursorMoveDy = 0;
                 hasPendingMove = false;
                 hasPendingCursorMove = false;
+                hasPendingWrappedCursorMove = false;
             }
 
             if (sendRelative)
                 WriteMessage(new InputMessage { Type = InputMessageType.SimulateMoveBy, A = dx, B = dy });
             if (sendCursor)
                 WriteMessage(new InputMessage { Type = InputMessageType.SimulateCursorMoveBy, A = cursorDx, B = cursorDy });
+            if (sendWrappedCursor)
+                WriteMessage(new InputMessage { Type = InputMessageType.SimulateWrappedCursorMoveBy, A = wrappedCursorDx, B = wrappedCursorDy });
         }
 
         private void WriteMessage(InputMessage msg) {
@@ -341,6 +351,7 @@ namespace BetterJoyForCemu {
                 case InputMessageType.SimulateMoveTo: serviceInput.MoveTo(msg.A, msg.B); break;
                 case InputMessageType.SimulateMoveBy: serviceInput.MoveBy(msg.A, msg.B); break;
                 case InputMessageType.SimulateCursorMoveBy: serviceInput.CursorMoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateWrappedCursorMoveBy: serviceInput.WrappedCursorMoveBy(msg.A, msg.B); break;
                 case InputMessageType.SimulateMoveToScreenCenter: serviceInput.MoveToScreenCenter(); break;
                 case InputMessageType.SimulateScroll: serviceInput.Scroll(msg.A != 0); break;
             }
@@ -425,6 +436,14 @@ namespace BetterJoyForCemu {
                 pendingCursorMoveDx += dx;
                 pendingCursorMoveDy += dy;
                 hasPendingCursorMove = true;
+            }
+        }
+
+        public void SimulateWrappedCursorMoveBy(int dx, int dy) {
+            lock (pendingMoveLock) {
+                pendingWrappedCursorMoveDx += dx;
+                pendingWrappedCursorMoveDy += dy;
+                hasPendingWrappedCursorMove = true;
             }
         }
 
