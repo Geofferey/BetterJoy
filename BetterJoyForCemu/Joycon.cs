@@ -972,25 +972,57 @@ namespace BetterJoyForCemu {
                 : (float)((nowTimestamp - lastDoThingsTimestamp) / (double)Stopwatch.Frequency);
             lastDoThingsTimestamp = nowTimestamp;
 
+            // Evaluate activation before recentering so both features use the same state for this
+            // report. "0" means always enabled and therefore has no explicit inactive->active
+            // edge to center on. A real activation bind centers only when it turns gyro on, not
+            // when toggle mode turns it off or on every packet while hold mode remains held.
+            string activeGyroCombo = Config.Value("active_gyro");
+            bool gyroWasEnabled = activeGyroCombo == "0" || active_gyro;
+            if (activeGyroCombo != "0") {
+                bool comboHeld = IsComboHeld(activeGyroCombo);
+                if (GyroHoldToggle) {
+                    active_gyro = comboHeld;
+                } else if (comboHeld && !prevActiveGyroComboHeld) {
+                    active_gyro = !active_gyro;
+                }
+                prevActiveGyroComboHeld = comboHeld;
+            }
+            bool gyroEnabled = activeGyroCombo == "0" || active_gyro;
+
+            bool ownsGyroMouse = extraGyroFeature == "mouse" &&
+                (isPro || other == null ||
+                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
+                    ? isLeft : !isLeft));
+            bool gyroMouseActionsEnabled = ownsGyroMouse && gyroEnabled;
+            bool gyroMouseJustEnabled = ownsGyroMouse && !gyroWasEnabled && gyroEnabled;
+
             // "Re-Centre Gyro" is a one-shot orientation operation, not merely a request to move
             // the Windows pointer. Apply it before sliders/stick/mouse consume this packet so the
             // pose held at the rising edge is neutral immediately. The legacy config key remains
-            // reset_mouse for compatibility; only mouse mode also moves the visible cursor.
+            // reset_mouse for compatibility. Keep tracking the bind edge while gyro-mouse is
+            // inactive, but do not let it reset orientation or move the pointer unless this
+            // controller currently owns active gyro-mouse output.
             string resetMouseVal = Config.Value("reset_mouse");
+            bool manualRecenterRequested = false;
             if (resetMouseVal != "0") {
                 bool resetMouseHeld = IsComboHeld(resetMouseVal);
-                if (resetMouseHeld && !prevResetMouseComboHeld) {
-                    if (extraGyroFeature == "mouse" &&
-                        (isPro || other == null ||
-                         (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
-                        form.SimulateMoveToScreenCenter();
-                    }
-
-                    RecenterGyro();
-                    dt = 0.0f;
-                    LogGyroMouseDiagnosticMarker("RESET");
-                }
+                manualRecenterRequested = gyroMouseActionsEnabled &&
+                    resetMouseHeld && !prevResetMouseComboHeld;
                 prevResetMouseComboHeld = resetMouseHeld;
+            } else {
+                prevResetMouseComboHeld = false;
+            }
+
+            // Enabling gyro-mouse establishes both a fresh desktop origin and a fresh orientation
+            // frame. If the manual recenter bind rises on that same report, perform the operation
+            // only once.
+            if (gyroMouseJustEnabled || manualRecenterRequested) {
+                if (ownsGyroMouse)
+                    form.SimulateMoveToScreenCenter();
+
+                RecenterGyro();
+                dt = 0.0f;
+                LogGyroMouseDiagnosticMarker(gyroMouseJustEnabled ? "GYRO ENABLED" : "RESET");
             }
 
             if (GyroAnalogSliders && (other != null || isPro)) {
@@ -1020,25 +1052,8 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            // active_gyro can be a single bind or a "+"-joined combo mixing controller/keyboard/
-            // mouse inputs together (see IsComboHeld) - either way it's evaluated fresh every
-            // packet rather than reacting to individual key/button transitions, since a combo
-            // needs the simultaneous state of everything in it, not just whichever one last
-            // changed. "0" (unbound) trivially holds true for an empty combo, which would
-            // otherwise flip active_gyro on every packet - guarded against explicitly.
-            string activeGyroCombo = Config.Value("active_gyro");
-            if (activeGyroCombo != "0") {
-                bool comboHeld = IsComboHeld(activeGyroCombo);
-                if (GyroHoldToggle) {
-                    active_gyro = comboHeld;
-                } else if (comboHeld && !prevActiveGyroComboHeld) {
-                    active_gyro = !active_gyro;
-                }
-                prevActiveGyroComboHeld = comboHeld;
-            }
-
             if (extraGyroFeature.Substring(0, 3) == "joy") {
-                if (Config.Value("active_gyro") == "0" || active_gyro) {
+                if (gyroEnabled) {
                     float[] control_stick = (extraGyroFeature == "joy_left") ? stick : stick2;
 
                     float dx, dy;
@@ -1054,13 +1069,6 @@ namespace BetterJoyForCemu {
                     control_stick[1] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[1] / GyroStickReduction + dy));
                 }
             }
-
-            bool ownsGyroMouse = extraGyroFeature == "mouse" &&
-                (isPro || other == null ||
-                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
-                    ? isLeft : !isLeft));
-            bool gyroMouseActionsEnabled = ownsGyroMouse &&
-                (activeGyroCombo == "0" || active_gyro);
 
             // Movement itself is applied per IMU sub-sample in ProcessGyroMouseSample. Reconcile
             // button state on every controller report, including reports where gyro-mouse is
