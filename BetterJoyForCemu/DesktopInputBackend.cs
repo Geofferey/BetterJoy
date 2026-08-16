@@ -14,15 +14,18 @@ namespace BetterJoyForCemu {
     internal sealed class DesktopInputBackend : IDisposable {
         private readonly object sync = new object();
         private readonly bool fakerInputEnabled;
+        private readonly bool allowDesktopFallback;
         private FakerInputMouseClient fakerInput;
         private bool fakerInputAttempted;
+        private DateTime fakerInputRetryAfterUtc;
         private bool fakerInputUsed;
         private byte heldMouseButtons;
         private bool hasVirtualCursor;
         private Point virtualCursor;
         private Point lastObservedCursor;
 
-        public DesktopInputBackend() {
+        public DesktopInputBackend(bool allowDesktopFallback = true) {
+            this.allowDesktopFallback = allowDesktopFallback;
             string configured = ConfigurationManager.AppSettings["UseFakerInput"];
             bool enabled = true;
             if (!String.IsNullOrWhiteSpace(configured) && !Boolean.TryParse(configured, out enabled))
@@ -32,15 +35,18 @@ namespace BetterJoyForCemu {
         }
 
         public void KeyClick(int keyCode) {
-            WindowsInput.Simulate.Events().Click((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            if (allowDesktopFallback)
+                WindowsInput.Simulate.Events().Click((WindowsInput.Events.KeyCode)keyCode).Invoke();
         }
 
         public void KeyHold(int keyCode) {
-            WindowsInput.Simulate.Events().Hold((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            if (allowDesktopFallback)
+                WindowsInput.Simulate.Events().Hold((WindowsInput.Events.KeyCode)keyCode).Invoke();
         }
 
         public void KeyRelease(int keyCode) {
-            WindowsInput.Simulate.Events().Release((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            if (allowDesktopFallback)
+                WindowsInput.Simulate.Events().Release((WindowsInput.Events.KeyCode)keyCode).Invoke();
         }
 
         public void ButtonClick(int buttonCode) {
@@ -60,14 +66,16 @@ namespace BetterJoyForCemu {
                         // A SendInput release is the best cross-device cleanup still available;
                         // do not emit another click and turn one user action into two.
                         DisableFakerInput();
-                        WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+                        if (allowDesktopFallback)
+                            WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
                         return;
                     }
 
                     DisableFakerInput();
                 }
 
-                WindowsInput.Simulate.Events().Click((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+                if (allowDesktopFallback)
+                    WindowsInput.Simulate.Events().Click((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
             }
         }
 
@@ -84,7 +92,8 @@ namespace BetterJoyForCemu {
                     DisableFakerInput();
                 }
 
-                WindowsInput.Simulate.Events().Hold((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+                if (allowDesktopFallback)
+                    WindowsInput.Simulate.Events().Hold((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
             }
         }
 
@@ -101,12 +110,16 @@ namespace BetterJoyForCemu {
                     DisableFakerInput();
                 }
 
-                WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+                if (allowDesktopFallback)
+                    WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
             }
         }
 
         public void MoveTo(int x, int y) {
             lock (sync) {
+                if (!allowDesktopFallback)
+                    return; // service mode has no trustworthy pixel-space desktop geometry
+
                 Point target = ClampToVirtualScreen(new Point(x, y));
                 if (TryMoveAbsolute(target))
                     return;
@@ -126,7 +139,8 @@ namespace BetterJoyForCemu {
 
                     DisableFakerInput();
                 }
-                WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
+                if (allowDesktopFallback)
+                    WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
             }
         }
 
@@ -135,6 +149,14 @@ namespace BetterJoyForCemu {
         // back to Windows pointer acceleration. A cached position also lets movement continue on
         // the UAC secure desktop when Cursor.Position still reports the last normal-desktop point.
         public void CursorMoveBy(int dx, int dy) {
+            // A LocalSystem service cannot observe the Winlogon desktop's Cursor.Position. HID
+            // relative motion needs no desktop coordinates and is routed by Windows to whichever
+            // input desktop is active, so it is the safe pre-login equivalent of exact mode.
+            if (!allowDesktopFallback) {
+                MoveBy(dx, dy);
+                return;
+            }
+
             lock (sync) {
                 Point observed = ReadCursorPosition();
                 Point current = observed;
@@ -151,6 +173,13 @@ namespace BetterJoyForCemu {
         }
 
         public void MoveToScreenCenter() {
+            if (!allowDesktopFallback) {
+                lock (sync) {
+                    TryMoveAbsoluteNormalized(16384, 16384);
+                }
+                return;
+            }
+
             Rectangle bounds = Screen.PrimaryScreen.Bounds;
             MoveTo(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
         }
@@ -166,9 +195,11 @@ namespace BetterJoyForCemu {
 
                     DisableFakerInput();
                 }
-                WindowsInput.Simulate.Events().Scroll(
-                    WindowsInput.Events.ButtonCode.VScroll,
-                    up ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+                if (allowDesktopFallback) {
+                    WindowsInput.Simulate.Events().Scroll(
+                        WindowsInput.Events.ButtonCode.VScroll,
+                        up ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+                }
             }
         }
 
@@ -179,22 +210,57 @@ namespace BetterJoyForCemu {
             Rectangle bounds = SystemInformation.VirtualScreen;
             ushort normalizedX = NormalizeCoordinate(target.X, bounds.Left, bounds.Width);
             ushort normalizedY = NormalizeCoordinate(target.Y, bounds.Top, bounds.Height);
+            return TryMoveAbsoluteNormalized(normalizedX, normalizedY, target);
+        }
+
+        private bool TryMoveAbsoluteNormalized(ushort normalizedX, ushort normalizedY) {
+            return TryMoveAbsoluteNormalized(normalizedX, normalizedY, Point.Empty);
+        }
+
+        private bool TryMoveAbsoluteNormalized(ushort normalizedX, ushort normalizedY, Point target) {
+            if (!EnsureFakerInput())
+                return false;
+
             if (!fakerInput.TrySendAbsolute(normalizedX, normalizedY)) {
                 DisableFakerInput();
                 return false;
             }
 
             fakerInputUsed = true;
-            virtualCursor = target;
-            hasVirtualCursor = true;
+            if (allowDesktopFallback) {
+                virtualCursor = target;
+                hasVirtualCursor = true;
+            }
             return true;
         }
 
-        private bool EnsureFakerInput() {
+        // Used during the service/helper handoff. connectIfNeeded is false when the service is
+        // surrendering a backend it may never have used; true after a helper disconnect, where a
+        // neutral physical-HID report must clear any state the departed helper could have left.
+        public void ReleaseVirtualMouseState(bool connectIfNeeded) {
+            lock (sync) {
+                bool available = fakerInput != null || (connectIfNeeded && EnsureFakerInput(true));
+                if (available && fakerInput.TrySendRelative(0, 0, 0, 0, 0))
+                    fakerInputUsed = true;
+
+                heldMouseButtons = 0;
+                hasVirtualCursor = false;
+            }
+        }
+
+        private bool EnsureFakerInput(bool forceRetry = false) {
             if (fakerInput != null)
                 return true;
-            if (!fakerInputEnabled || fakerInputAttempted)
+            if (!fakerInputEnabled)
                 return false;
+            if (fakerInputAttempted) {
+                // A service can start while the UMDF device stack is still settling during boot.
+                // Desktop helpers retain their one-shot behavior; the service retries at a low
+                // rate so cold-login support does not depend on a lucky startup ordering.
+                if (!forceRetry && (allowDesktopFallback || DateTime.UtcNow < fakerInputRetryAfterUtc))
+                    return false;
+                fakerInputAttempted = false;
+            }
 
             fakerInputAttempted = true;
             try {
@@ -204,6 +270,9 @@ namespace BetterJoyForCemu {
                 // prevent BetterJoy itself (or the service's input helper) from running.
                 fakerInput = null;
             }
+
+            if (fakerInput == null)
+                fakerInputRetryAfterUtc = DateTime.UtcNow.AddSeconds(5);
 
             return fakerInput != null;
         }

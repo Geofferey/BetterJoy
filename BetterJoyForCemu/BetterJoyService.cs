@@ -5,9 +5,9 @@ namespace BetterJoyForCemu {
     // Hosts the exact same core pipeline (Program.Start/Stop) as GUI mode, just wired to a
     // HeadlessJoyconHost instead of a MainForm - see EntryPoint.cs for the "-service" switch
     // that runs this instead of the normal WinForms path via ServiceBase.Run(new
-    // BetterJoyService()). Keyboard/mouse remap needs an interactive desktop that Session 0
-    // doesn't have, so a separate helper process is launched into whichever session is currently
-    // active (see SessionLauncher/InputHelper) and relaunched on every session change.
+    // BetterJoyService()). A session helper handles input hooks and ordinary desktop fallback
+    // after login; before login, the service writes controller mouse output directly through
+    // FakerInput's virtual HID device (see HeadlessJoyconHost/DesktopInputBackend).
     public class BetterJoyService : ServiceBase {
         private HeadlessJoyconHost host;
 
@@ -34,7 +34,10 @@ namespace BetterJoyForCemu {
         protected override void OnStop() {
             try {
                 Program.Stop();
-            } catch { }
+            } catch { } finally {
+                if (host != null)
+                    host.StopInputRouting();
+            }
         }
 
         // Fires on logon/unlock/console-connect (a session becoming the active one) - relaunch

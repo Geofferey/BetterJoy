@@ -38,7 +38,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
-Name: "fakerinput"; Description: "Install FakerInput virtual mouse (controller mouse works in elevated apps and UAC)"; GroupDescription: "Drivers:"; Flags: unchecked
+Name: "fakerinput"; Description: "Install FakerInput virtual mouse (works in elevated apps, UAC, and before login in service mode)"; GroupDescription: "Drivers:"; Flags: unchecked
 Name: "service"; Description: "Run BetterJoy as a Windows Service (starts before login)"; GroupDescription: "Advanced:"; Flags: unchecked
 
 [Files]

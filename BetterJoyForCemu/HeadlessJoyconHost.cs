@@ -12,17 +12,22 @@ using System.Threading.Tasks;
 namespace BetterJoyForCemu {
     // IJoyconHost implementation for running as a Windows Service (see BetterJoyService) - no
     // desktop, so no controller slots/tray icon/dialogs exist. UI-only members are safe no-ops;
-    // logging goes to the Windows Event Log instead of a console TextBox. Keyboard/mouse
-    // remap/gyro-mouse are forwarded over a named pipe to a session-launched helper process (see
-    // InputHelper/SessionLauncher) since Session 0 itself has no desktop for WindowsInput's
-    // hooks/injection to attach to. Also runs the service side of the GUI control pipe (see
-    // ServiceControlProtocol) so a GUI that has deferred hardware ownership here can still show
-    // live controller status and trigger rumble test/join-split/calibration.
+    // logging goes to the Windows Event Log instead of a console TextBox. After login, desktop
+    // input is forwarded to a session helper for hooks and ordinary Windows fallback. Before
+    // login (or whenever that helper disconnects), controller mouse output goes straight from
+    // LocalSystem through FakerInput's virtual HID device; it needs no interactive desktop.
+    // Also runs the service side of the GUI control pipe (see ServiceControlProtocol) so a GUI
+    // that has deferred hardware ownership here can still show live controller status and
+    // trigger rumble test/join-split/calibration.
     public class HeadlessJoyconHost : IJoyconHost {
         private const string EventSource = "BetterJoy";
 
         private readonly object pipeLock = new object();
         private NamedPipeServerStream pipe;
+        private readonly DesktopInputBackend serviceInput = new DesktopInputBackend(false);
+        private readonly HashSet<int> heldDesktopMouseButtons = new HashSet<int>();
+        private bool helperReady;
+        private bool helperOutputSent;
         private bool loggedNoHelperConnected;
 
         private readonly object controlPipeLock = new object();
@@ -155,6 +160,14 @@ namespace BetterJoyForCemu {
             lock (pipeLock) {
                 if (connectedPipe != pipe)
                     return; // a newer session already replaced this one
+
+                // Stop the service-side virtual mouse before allowing the helper writer path to
+                // observe helperReady=true. WriteMessage uses this same lock, making ownership a
+                // strict handoff rather than a race where both processes can emit one report.
+                serviceInput.ReleaseVirtualMouseState(false);
+                helperReady = true;
+                helperOutputSent = false;
+                ReapplyHeldButtonsToHelperLocked(connectedPipe);
             }
 
             AppendTextBox("Input helper connected.");
@@ -179,11 +192,33 @@ namespace BetterJoyForCemu {
                 // helper disconnected/crashed - BetterJoyService relaunches on the next session
                 // change; nothing to do here but stop reading.
             } finally {
+                lock (pipeLock) {
+                    if (connectedPipe == pipe) {
+                        TransferOutputToServiceLocked();
+                    } else if (!helperReady) {
+                        // A deliberately superseded helper has now completed its own neutral
+                        // shutdown report. It is finally safe to restore any controller button
+                        // still physically held if its replacement did not connect in time.
+                        serviceInput.ReleaseVirtualMouseState(true);
+                        foreach (int buttonCode in heldDesktopMouseButtons)
+                            serviceInput.ButtonHold(buttonCode);
+                    }
+                }
                 AppendTextBox("Input helper disconnected.");
             }
         }
 
         private void ClosePipeLocked() {
+            // This is the deliberate replacement path (logon/unlock/console switch), not an
+            // unexpected helper loss. Neutralize the old owner but do not immediately restore a
+            // held button through the service: the old helper still has to observe the pipe close
+            // and its own final neutral report could otherwise release the freshly restored hold.
+            if (helperReady || helperOutputSent) {
+                helperReady = false;
+                if (helperOutputSent)
+                    serviceInput.ReleaseVirtualMouseState(true);
+                helperOutputSent = false;
+            }
             if (pipe != null) {
                 try { pipe.Dispose(); } catch { }
                 pipe = null;
@@ -261,11 +296,14 @@ namespace BetterJoyForCemu {
 
         private void WriteMessage(InputMessage msg) {
             lock (pipeLock) {
-                if (pipe == null || !pipe.IsConnected) {
+                UpdateHeldButtonStateLocked(msg);
+
+                if (!helperReady || pipe == null || !pipe.IsConnected) {
                     if (!loggedNoHelperConnected) {
                         loggedNoHelperConnected = true;
-                        AppendTextBox("No input helper connected yet - keyboard/mouse remap and gyro-mouse aren't available until a user is logged on.");
+                        AppendTextBox("No input helper connected - routing controller mouse output through FakerInput for the login/lock screen when available. Keyboard and physical input-hook mappings wait for login.");
                     }
+                    ExecuteServiceInputLocked(msg);
                     return;
                 }
 
@@ -273,8 +311,77 @@ namespace BetterJoyForCemu {
                     var writer = new BinaryWriter(pipe);
                     msg.WriteTo(writer);
                     writer.Flush();
+                    helperOutputSent = true;
                 } catch {
-                    // best-effort - a mid-write disconnect just drops this one command
+                    // Transfer the current report too: a mid-write disconnect is exactly when
+                    // pre-login/lock-screen fallback is needed, and mouse displacement must not
+                    // disappear merely because output ownership changed.
+                    TransferOutputToServiceLocked();
+                    ExecuteServiceInputLocked(msg);
+                }
+            }
+        }
+
+        private void UpdateHeldButtonStateLocked(InputMessage msg) {
+            if (msg.Type == InputMessageType.SimulateButtonHold)
+                heldDesktopMouseButtons.Add(msg.A);
+            else if (msg.Type == InputMessageType.SimulateButtonRelease)
+                heldDesktopMouseButtons.Remove(msg.A);
+        }
+
+        private void ExecuteServiceInputLocked(InputMessage msg) {
+            switch (msg.Type) {
+                case InputMessageType.SimulateKeyClick: serviceInput.KeyClick(msg.A); break;
+                case InputMessageType.SimulateKeyHold: serviceInput.KeyHold(msg.A); break;
+                case InputMessageType.SimulateKeyRelease: serviceInput.KeyRelease(msg.A); break;
+                case InputMessageType.SimulateButtonClick: serviceInput.ButtonClick(msg.A); break;
+                case InputMessageType.SimulateButtonHold: serviceInput.ButtonHold(msg.A); break;
+                case InputMessageType.SimulateButtonRelease: serviceInput.ButtonRelease(msg.A); break;
+                case InputMessageType.SimulateMoveTo: serviceInput.MoveTo(msg.A, msg.B); break;
+                case InputMessageType.SimulateMoveBy: serviceInput.MoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateCursorMoveBy: serviceInput.CursorMoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateMoveToScreenCenter: serviceInput.MoveToScreenCenter(); break;
+                case InputMessageType.SimulateScroll: serviceInput.Scroll(msg.A != 0); break;
+            }
+        }
+
+        private void TransferOutputToServiceLocked() {
+            if (!helperReady && !helperOutputSent)
+                return;
+
+            helperReady = false;
+            if (helperOutputSent)
+                serviceInput.ReleaseVirtualMouseState(true);
+            helperOutputSent = false;
+
+            foreach (int buttonCode in heldDesktopMouseButtons)
+                serviceInput.ButtonHold(buttonCode);
+        }
+
+        private void ReapplyHeldButtonsToHelperLocked(NamedPipeServerStream connectedPipe) {
+            if (heldDesktopMouseButtons.Count == 0)
+                return;
+
+            try {
+                var writer = new BinaryWriter(connectedPipe);
+                foreach (int buttonCode in heldDesktopMouseButtons)
+                    new InputMessage { Type = InputMessageType.SimulateButtonHold, A = buttonCode }.WriteTo(writer);
+                writer.Flush();
+                helperOutputSent = true;
+            } catch {
+                TransferOutputToServiceLocked();
+            }
+        }
+
+        public void StopInputRouting() {
+            lock (pipeLock) {
+                helperReady = false;
+                helperOutputSent = false;
+                serviceInput.ReleaseVirtualMouseState(false);
+                serviceInput.Dispose();
+                if (pipe != null) {
+                    try { pipe.Dispose(); } catch { }
+                    pipe = null;
                 }
             }
         }
