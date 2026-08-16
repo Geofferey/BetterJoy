@@ -804,7 +804,11 @@ namespace BetterJoyForCemu {
         private int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
             byte[] raw_buf = new byte[report_len];
+            long hidCallStart = GyroMouseDebugLogging ? Stopwatch.GetTimestamp() : 0;
             int ret = HIDapi.hid_read_timeout(handle, raw_buf, new UIntPtr(report_len), 5);
+            long hidCallEnd = GyroMouseDebugLogging ? Stopwatch.GetTimestamp() : 0;
+            RecordGyroMouseHidCall(ret, ret > 0 ? raw_buf[1] : (byte)0,
+                                   hidCallStart, hidCallEnd);
 
             if (ret > 0) {
                 // Process packets as soon as they come
@@ -1313,6 +1317,34 @@ namespace BetterJoyForCemu {
         private float diagIntervalMinGyrGX = float.MaxValue, diagIntervalMaxGyrGX = float.MinValue;
         private float diagIntervalMinRollDeg = float.MaxValue, diagIntervalMaxRollDeg = float.MinValue;
 
+        // Timing evidence for the Joy-Con-only jagged-pointer investigation. HID arrival is
+        // captured immediately after hid_read_timeout returns a report; pointer request timing
+        // is captured immediately before BetterJoy hands a non-zero delta to its host. Keeping
+        // both on this controller instance identifies whether unevenness already exists at the
+        // Bluetooth/HID boundary or first appears later in BetterJoy's output path. Stopwatch and
+        // arithmetic only here; the existing background writer remains the sole file-I/O owner.
+        private long diagLastReportArrivalTimestamp, diagLastPointerRequestTimestamp;
+        private bool diagHasLastDeviceTimer;
+        private byte diagLastDeviceTimer;
+        private long diagIntervalReportDeltaCount, diagIntervalPointerRequestDeltaCount;
+        private double diagIntervalReportDeltaSumMs, diagIntervalPointerRequestDeltaSumMs;
+        private double diagIntervalReportDeltaMinMs = double.MaxValue;
+        private double diagIntervalReportDeltaMaxMs = double.MinValue;
+        private double diagIntervalPointerRequestDeltaMinMs = double.MaxValue;
+        private double diagIntervalPointerRequestDeltaMaxMs = double.MinValue;
+        private long diagIntervalDeviceTimerDeltaCount, diagIntervalUnexpectedDeviceTimerDeltas;
+        private long diagIntervalDeviceTimerDeltaSum;
+        private int diagIntervalDeviceTimerDeltaMin = int.MaxValue;
+        private int diagIntervalDeviceTimerDeltaMax = int.MinValue;
+        private long diagPreviousHidCallEndTimestamp;
+        private long diagPendingHidWaitTicks, diagPendingOutsideHidTicks;
+        private long diagIntervalHidPhaseCount;
+        private double diagIntervalHidWaitSumMs, diagIntervalOutsideHidSumMs;
+        private double diagIntervalHidWaitMinMs = double.MaxValue;
+        private double diagIntervalHidWaitMaxMs = double.MinValue;
+        private double diagIntervalOutsideHidMinMs = double.MaxValue;
+        private double diagIntervalOutsideHidMaxMs = double.MinValue;
+
         // Auto-detected "controller genuinely at rest" periods, marked in the log so a stationary
         // window doesn't have to be manually timestamped and reported separately - can't just
         // threshold gyr_g.Y's raw magnitude (a biased reading won't sit near zero even at true
@@ -1351,6 +1383,126 @@ namespace BetterJoyForCemu {
                     // diagnostic only - never let logging itself take down gyro-mouse
                 }
             }
+        }
+
+        private void RecordGyroMouseHidCall(int result, byte deviceTimer,
+                                            long callStart, long callEnd) {
+            if (!GyroMouseDebugLogging)
+                return;
+
+            // A report may require several 5ms timeout calls. Accumulate every native wait and
+            // every interval outside the native call until one succeeds; looking only at the
+            // final call would mislabel preceding timeouts as BetterJoy processing time.
+            if (diagPreviousHidCallEndTimestamp != 0)
+                diagPendingOutsideHidTicks += callStart - diagPreviousHidCallEndTimestamp;
+            diagPendingHidWaitTicks += callEnd - callStart;
+            diagPreviousHidCallEndTimestamp = callEnd;
+
+            if (result <= 0)
+                return;
+
+            if (IsGyroMouseActive()) {
+                double hidWaitMs = diagPendingHidWaitTicks * 1000.0 / Stopwatch.Frequency;
+                double outsideHidMs = diagPendingOutsideHidTicks * 1000.0 / Stopwatch.Frequency;
+                RecordGyroMouseReportTiming(deviceTimer, callEnd, hidWaitMs, outsideHidMs);
+            }
+
+            diagPendingHidWaitTicks = 0;
+            diagPendingOutsideHidTicks = 0;
+        }
+
+        private void RecordGyroMouseReportTiming(byte deviceTimer, long now,
+                                                  double hidWaitMs, double outsideHidMs) {
+            if (!GyroMouseDebugLogging || !IsGyroMouseActive())
+                return;
+
+            if (diagLastReportArrivalTimestamp != 0) {
+                double deltaMs = (now - diagLastReportArrivalTimestamp) * 1000.0 /
+                                 Stopwatch.Frequency;
+                diagIntervalReportDeltaSumMs += deltaMs;
+                diagIntervalReportDeltaCount++;
+                if (deltaMs < diagIntervalReportDeltaMinMs) diagIntervalReportDeltaMinMs = deltaMs;
+                if (deltaMs > diagIntervalReportDeltaMaxMs) diagIntervalReportDeltaMaxMs = deltaMs;
+            }
+            diagLastReportArrivalTimestamp = now;
+
+            if (diagHasLastDeviceTimer) {
+                // Byte subtraction intentionally wraps modulo 256. BetterJoy already expects a
+                // normal full-IMU report to advance this timer by three bundled samples.
+                int timerDelta = (byte)(deviceTimer - diagLastDeviceTimer);
+                diagIntervalDeviceTimerDeltaSum += timerDelta;
+                diagIntervalDeviceTimerDeltaCount++;
+                if (timerDelta < diagIntervalDeviceTimerDeltaMin) diagIntervalDeviceTimerDeltaMin = timerDelta;
+                if (timerDelta > diagIntervalDeviceTimerDeltaMax) diagIntervalDeviceTimerDeltaMax = timerDelta;
+                if (timerDelta != 3) diagIntervalUnexpectedDeviceTimerDeltas++;
+            }
+            diagLastDeviceTimer = deviceTimer;
+            diagHasLastDeviceTimer = true;
+
+            diagIntervalHidWaitSumMs += hidWaitMs;
+            diagIntervalOutsideHidSumMs += outsideHidMs;
+            diagIntervalHidPhaseCount++;
+            if (hidWaitMs < diagIntervalHidWaitMinMs) diagIntervalHidWaitMinMs = hidWaitMs;
+            if (hidWaitMs > diagIntervalHidWaitMaxMs) diagIntervalHidWaitMaxMs = hidWaitMs;
+            if (outsideHidMs < diagIntervalOutsideHidMinMs) diagIntervalOutsideHidMinMs = outsideHidMs;
+            if (outsideHidMs > diagIntervalOutsideHidMaxMs) diagIntervalOutsideHidMaxMs = outsideHidMs;
+        }
+
+        private void RecordGyroMousePointerRequestTiming() {
+            if (!GyroMouseDebugLogging)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (diagLastPointerRequestTimestamp != 0) {
+                double deltaMs = (now - diagLastPointerRequestTimestamp) * 1000.0 /
+                                 Stopwatch.Frequency;
+                diagIntervalPointerRequestDeltaSumMs += deltaMs;
+                diagIntervalPointerRequestDeltaCount++;
+                if (deltaMs < diagIntervalPointerRequestDeltaMinMs) diagIntervalPointerRequestDeltaMinMs = deltaMs;
+                if (deltaMs > diagIntervalPointerRequestDeltaMaxMs) diagIntervalPointerRequestDeltaMaxMs = deltaMs;
+            }
+            diagLastPointerRequestTimestamp = now;
+        }
+
+        private string GyroMouseDiagnosticSource() {
+            string controller = isPro ? "Pro" : (isLeft ? "JoyCon-L" : "JoyCon-R");
+            string transport = isUSB ? "USB" : "BT";
+            string layout = isPro ? "single" :
+                (other == null ? "solo" : (other == this ? "self" : "joined"));
+            return controller + "/" + transport + "/" + layout;
+        }
+
+        private void ResetGyroMouseTimingInterval() {
+            diagIntervalReportDeltaCount = 0;
+            diagIntervalReportDeltaSumMs = 0.0;
+            diagIntervalReportDeltaMinMs = double.MaxValue;
+            diagIntervalReportDeltaMaxMs = double.MinValue;
+            diagIntervalPointerRequestDeltaCount = 0;
+            diagIntervalPointerRequestDeltaSumMs = 0.0;
+            diagIntervalPointerRequestDeltaMinMs = double.MaxValue;
+            diagIntervalPointerRequestDeltaMaxMs = double.MinValue;
+            diagIntervalDeviceTimerDeltaCount = 0;
+            diagIntervalDeviceTimerDeltaSum = 0;
+            diagIntervalDeviceTimerDeltaMin = int.MaxValue;
+            diagIntervalDeviceTimerDeltaMax = int.MinValue;
+            diagIntervalUnexpectedDeviceTimerDeltas = 0;
+            diagIntervalHidPhaseCount = 0;
+            diagIntervalHidWaitSumMs = 0.0;
+            diagIntervalOutsideHidSumMs = 0.0;
+            diagIntervalHidWaitMinMs = double.MaxValue;
+            diagIntervalHidWaitMaxMs = double.MinValue;
+            diagIntervalOutsideHidMinMs = double.MaxValue;
+            diagIntervalOutsideHidMaxMs = double.MinValue;
+        }
+
+        private void ResetGyroMouseTimingTracking() {
+            diagLastReportArrivalTimestamp = 0;
+            diagLastPointerRequestTimestamp = 0;
+            diagHasLastDeviceTimer = false;
+            diagPreviousHidCallEndTimestamp = 0;
+            diagPendingHidWaitTicks = 0;
+            diagPendingOutsideHidTicks = 0;
+            ResetGyroMouseTimingInterval();
         }
 
         // Called for every sub-sample - accumulates this interval's stats and runs the stillness
@@ -1396,8 +1548,39 @@ namespace BetterJoyForCemu {
             bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
             float neutralValue = allowCalibration ? activeData[1] : gyr_neutral[1];
 
+            double reportDeltaAverage = diagIntervalReportDeltaCount > 0
+                ? diagIntervalReportDeltaSumMs / diagIntervalReportDeltaCount : 0.0;
+            double reportDeltaMinimum = diagIntervalReportDeltaCount > 0
+                ? diagIntervalReportDeltaMinMs : 0.0;
+            double reportDeltaMaximum = diagIntervalReportDeltaCount > 0
+                ? diagIntervalReportDeltaMaxMs : 0.0;
+            double pointerDeltaAverage = diagIntervalPointerRequestDeltaCount > 0
+                ? diagIntervalPointerRequestDeltaSumMs / diagIntervalPointerRequestDeltaCount : 0.0;
+            double pointerDeltaMinimum = diagIntervalPointerRequestDeltaCount > 0
+                ? diagIntervalPointerRequestDeltaMinMs : 0.0;
+            double pointerDeltaMaximum = diagIntervalPointerRequestDeltaCount > 0
+                ? diagIntervalPointerRequestDeltaMaxMs : 0.0;
+            double deviceTimerDeltaAverage = diagIntervalDeviceTimerDeltaCount > 0
+                ? diagIntervalDeviceTimerDeltaSum / (double)diagIntervalDeviceTimerDeltaCount : 0.0;
+            int deviceTimerDeltaMinimum = diagIntervalDeviceTimerDeltaCount > 0
+                ? diagIntervalDeviceTimerDeltaMin : 0;
+            int deviceTimerDeltaMaximum = diagIntervalDeviceTimerDeltaCount > 0
+                ? diagIntervalDeviceTimerDeltaMax : 0;
+            double hidWaitAverage = diagIntervalHidPhaseCount > 0
+                ? diagIntervalHidWaitSumMs / diagIntervalHidPhaseCount : 0.0;
+            double hidWaitMinimum = diagIntervalHidPhaseCount > 0
+                ? diagIntervalHidWaitMinMs : 0.0;
+            double hidWaitMaximum = diagIntervalHidPhaseCount > 0
+                ? diagIntervalHidWaitMaxMs : 0.0;
+            double outsideHidAverage = diagIntervalHidPhaseCount > 0
+                ? diagIntervalOutsideHidSumMs / diagIntervalHidPhaseCount : 0.0;
+            double outsideHidMinimum = diagIntervalHidPhaseCount > 0
+                ? diagIntervalOutsideHidMinMs : 0.0;
+            double outsideHidMaximum = diagIntervalHidPhaseCount > 0
+                ? diagIntervalOutsideHidMaxMs : 0.0;
+
             string line = string.Format(
-                "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(quat): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  mapped: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}\r\n",
+                "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(quat): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  mapped: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}",
                 DateTime.Now,
                 diagIntervalSumGyrGY / diagIntervalSampleCount, diagIntervalMinGyrGY, diagIntervalMaxGyrGY,
                 diagIntervalPositiveCount, diagIntervalNegativeCount,
@@ -1408,6 +1591,18 @@ namespace BetterJoyForCemu {
                 diagIntervalSumRawGyrY / diagIntervalSampleCount,
                 allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
                 diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
+            line += string.Format(
+                "  |  timing[{0}]: HID ms avg={1,6:F2} min={2,6:F2} max={3,6:F2} n={4,3}; timer d avg={5,5:F2} min={6,3} max={7,3} unexpected={8,3}; phase ms/report HID-wait avg={9,6:F2} min={10,6:F2} max={11,6:F2}, outside-HID avg={12,6:F2} min={13,6:F2} max={14,6:F2} n={15,3}; pointer-request ms avg={16,6:F2} min={17,6:F2} max={18,6:F2} n={19,3}\r\n",
+                GyroMouseDiagnosticSource(),
+                reportDeltaAverage, reportDeltaMinimum, reportDeltaMaximum,
+                diagIntervalReportDeltaCount,
+                deviceTimerDeltaAverage, deviceTimerDeltaMinimum, deviceTimerDeltaMaximum,
+                diagIntervalUnexpectedDeviceTimerDeltas,
+                hidWaitAverage, hidWaitMinimum, hidWaitMaximum,
+                outsideHidAverage, outsideHidMinimum, outsideHidMaximum,
+                diagIntervalHidPhaseCount,
+                pointerDeltaAverage, pointerDeltaMinimum, pointerDeltaMaximum,
+                diagIntervalPointerRequestDeltaCount);
             diagLogQueue.Enqueue(line);
 
             diagIntervalDx = 0; diagIntervalDy = 0; diagIntervalSampleCount = 0;
@@ -1419,6 +1614,7 @@ namespace BetterJoyForCemu {
             diagIntervalMinGyrGZ = float.MaxValue; diagIntervalMaxGyrGZ = float.MinValue;
             diagIntervalMinGyrGX = float.MaxValue; diagIntervalMaxGyrGX = float.MinValue;
             diagIntervalMinRollDeg = float.MaxValue; diagIntervalMaxRollDeg = float.MinValue;
+            ResetGyroMouseTimingInterval();
         }
 
         private void UpdateStillnessStreak() {
@@ -1702,6 +1898,7 @@ namespace BetterJoyForCemu {
             EnsureGyroOrientationBasis();
 
             if (!OwnsGyroMouse()) {
+                ResetGyroMouseTimingTracking();
                 ResetGyroMouseMotionState(true);
                 return;
             }
@@ -1741,6 +1938,7 @@ namespace BetterJoyForCemu {
                 gyroMousePlayerSpace.Update(mouseGyroRate, mouseAccel, subSamplePeriod);
 
             if (!gyroPointerActive) {
+                ResetGyroMouseTimingTracking();
                 pendingMouseDx = pendingMouseDy = 0.0f;
                 filteredGyroMouseRate = Vector2.Zero;
                 filteredGyroMouseRateInitialized = false;
@@ -1835,6 +2033,9 @@ namespace BetterJoyForCemu {
             int dy = (int)pendingMouseDy;
             pendingMouseDx -= dx;
             pendingMouseDy -= dy;
+
+            if (dx != 0 || dy != 0)
+                RecordGyroMousePointerRequestTiming();
 
             RecordGyroMouseDiagnosticSample(dx, dy, rollDeg, yawRate, pitchRate);
 
