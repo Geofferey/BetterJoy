@@ -1638,7 +1638,12 @@ namespace BetterJoyForCemu {
                 allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
                 diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
             line += string.Format(
-                "  |  timing[{0}]: HID ms avg={1,6:F2} min={2,6:F2} max={3,6:F2} n={4,3}; timer d avg={5,5:F2} min={6,3} max={7,3} unexpected={8,3}; phase ms/report HID-wait avg={9,6:F2} min={10,6:F2} max={11,6:F2}, outside-HID avg={12,6:F2} min={13,6:F2} max={14,6:F2} n={15,3}; pointer-request ms avg={16,6:F2} min={17,6:F2} max={18,6:F2} n={19,3}\r\n",
+                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} error={2,6:F2}deg even-leak={3,7:F4} corr={4,7:F3}  |  timing[{5}]: HID ms avg={6,6:F2} min={7,6:F2} max={8,6:F2} n={9,3}; timer d avg={10,5:F2} min={11,3} max={12,3} unexpected={13,3}; phase ms/report HID-wait avg={14,6:F2} min={15,6:F2} max={16,6:F2}, outside-HID avg={17,6:F2} min={18,6:F2} max={19,6:F2} n={20,3}; pointer-request ms avg={21,6:F2} min={22,6:F2} max={23,6:F2} n={24,3}\r\n",
+                gyroMousePlayerSpace.GravityCorrectionTrust,
+                gyroMousePlayerSpace.YawDominance,
+                gyroMousePlayerSpace.GravityErrorDegrees,
+                gyroMousePlayerSpace.EvenYawLeakRatio,
+                gyroMousePlayerSpace.EvenYawLeakCorrection,
                 GyroMouseDiagnosticSource(),
                 reportDeltaAverage, reportDeltaMinimum, reportDeltaMaximum,
                 diagIntervalReportDeltaCount,
@@ -2029,8 +2034,8 @@ namespace BetterJoyForCemu {
                 float deltaYawRad;
                 float deltaPitchRad;
                 if (UseFilteredIMU) {
-                    gyroMousePlayerSpace.Map(mouseGyroRate, out yawRate, out pitchRate,
-                                             out rollRad);
+                    gyroMousePlayerSpace.Map(mouseGyroRate, subSamplePeriod, out yawRate,
+                                             out pitchRate, out rollRad);
 
                     SmoothGyroMouseRates(ref yawRate, ref pitchRate, subSamplePeriod);
 
