@@ -1505,6 +1505,7 @@ namespace BetterJoyForCemu {
         private void SmoothGyroMouseRates(ref float yawRate, ref float pitchRate,
                                           float samplePeriod) {
             Vector2 current = new Vector2(yawRate, pitchRate);
+            float directionRelease = 0.0f;
             if (GyroMouseSmoothingTimeMs <= 0 || GyroMouseSmoothingThreshold <= 0.0f) {
                 filteredGyroMouseRate = current;
                 filteredGyroMouseRateInitialized = true;
@@ -1515,9 +1516,27 @@ namespace BetterJoyForCemu {
                 filteredGyroMouseRate = current;
                 filteredGyroMouseRateInitialized = true;
             } else {
+                Vector2 previousFiltered = filteredGyroMouseRate;
                 float timeConstant = GyroMouseSmoothingTimeMs / 1000.0f;
                 float alpha = 1.0f - (float)Math.Exp(-samplePeriod / timeConstant);
                 filteredGyroMouseRate += alpha * (current - filteredGyroMouseRate);
+
+                // Speed alone cannot tell a deliberate corner from ordinary low-speed jitter.
+                // Release the filter as the live pointer vector turns away from its history so
+                // a slow square does not retain motion from the preceding side and bow outward.
+                // Comparing against the pre-update value measures the actual direction change;
+                // the epsilon guard leaves true stops to decay normally without normalizing zero.
+                const float directionEpsilon = 1e-6f;
+                if (current.LengthSquared() > directionEpsilon &&
+                    previousFiltered.LengthSquared() > directionEpsilon) {
+                    float alignment = Vector2.Dot(Vector2.Normalize(current),
+                                                  Vector2.Normalize(previousFiltered));
+                    alignment = Math.Max(-1.0f, Math.Min(1.0f, alignment));
+                    // Combine this with the ordinary speed release below without changing the
+                    // persistent filter state until the final blend is known.
+                    directionRelease = Math.Max(0.0f, Math.Min(1.0f,
+                        (1.0f - alignment) * 2.0f));
+                }
             }
 
             float speed = current.Length();
@@ -1533,6 +1552,7 @@ namespace BetterJoyForCemu {
             // when the user stops after a quick sweep.
             unsmoothedFactor = unsmoothedFactor * unsmoothedFactor *
                                (3.0f - 2.0f * unsmoothedFactor);
+            unsmoothedFactor = Math.Max(unsmoothedFactor, directionRelease);
             Vector2 result = Vector2.Lerp(filteredGyroMouseRate, current, unsmoothedFactor);
             if (unsmoothedFactor >= 1.0f)
                 filteredGyroMouseRate = current;
@@ -1618,7 +1638,10 @@ namespace BetterJoyForCemu {
                     // small real-world angular speed, smoothly reduce gain instead of imposing a
                     // deadzone or adding more low-pass lag. At and above the threshold the Player
                     // Space result is unchanged.
-                    float inputSpeed = mouseGyroRate.Length();
+                    // Tightening is a pointer-output rule, so base it only on the two mapped
+                    // cursor axes. Using the full three-axis gyro magnitude lets otherwise
+                    // unused wrist roll raise yaw/pitch gain during diagonals and figure-eights.
+                    float inputSpeed = new Vector2(yawRate, pitchRate).Length();
                     if (GyroMouseTighteningThreshold > 0.0f &&
                         inputSpeed < GyroMouseTighteningThreshold) {
                         float tightening = inputSpeed / GyroMouseTighteningThreshold;
