@@ -559,6 +559,12 @@ namespace BetterJoyForCemu {
                         continue;
                     }
 
+                    // USB enumeration exposes a shared placeholder serial; Attach resolves the
+                    // controller's real MAC. Give service-mode clients a fresh profile identity
+                    // before button polling begins, rather than leaving the dropdown on the
+                    // temporary HID-path identity sent when the slot was first discovered.
+                    form.RefreshControllerState();
+
                     jc.SetHomeLight(on);
 
                     jc.Begin();

@@ -30,7 +30,14 @@ namespace BetterJoyForCemu {
         // going through the shared HandleButtonTransition.
         private readonly ServiceControlClient serviceClient;
         private Timer joyPoll;
+        private Timer controllerRefreshTimer;
         private readonly Dictionary<Joycon, bool[]> joyPrevButtons = new Dictionary<Joycon, bool[]>();
+        private readonly List<ControllerProfileInfo> remoteProfiles = new List<ControllerProfileInfo>();
+        private readonly string preferredProfileId;
+        private ComboBox controllerSelector;
+        private bool updatingControllerSelector;
+        private bool initialControllerSelection = true;
+        private long newestControllerSequence = -1;
 
         // Combo capture: hold down everything you want in the combo, then let go of all of it -
         // whatever got pressed while at least one member was held becomes the saved bind, joined
@@ -40,46 +47,39 @@ namespace BetterJoyForCemu {
         private HashSet<string> comboHeldNow;
         private Timer comboTimeout;
 
-        // left_click/right_click/center_click/scroll_up/scroll_down/clench_gyro live in App.config
-        // (ConfigurationManager.AppSettings), not Config.cs's own flat settings file like every
-        // other button here - Config.cs's file uses a fixed line-count (settingsNum) that gets
-        // destructively rewritten (deleting calibration data and every other keybind) if the
-        // count on disk doesn't match what the code expects, and it has no safe migration for
-        // adding new keys to it the way App.config already does (EntryPoint.
-        // AddMissingSettingsFromTemplate). GetBindValue/SetBindValue below route to whichever
-        // store actually owns a given key, so the rest of this dialog's generic capture/save
-        // logic doesn't need to care which one it's talking to.
-        private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string> {
+        // These actions only accept controller inputs at runtime. Keyboard/mouse capture is
+        // intentionally rejected for them below, just as before profiles were introduced.
+        private static readonly HashSet<string> ControllerOnlyKeys = new HashSet<string> {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
             "clench_gyro"
         };
 
-        private static string GetBindValue(string key) {
-            if (AppConfigBackedKeys.Contains(key))
-                return ConfigurationManager.AppSettings[key] ?? "0";
-            return Config.Value(key);
+        private string SelectedProfileId {
+            get {
+                ControllerProfileInfo selected = controllerSelector?.SelectedItem as ControllerProfileInfo;
+                return selected?.ProfileId;
+            }
         }
 
-        private static void SetBindValue(string key, string value) {
-            if (AppConfigBackedKeys.Contains(key)) {
-                var configFile = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-                var settings = configFile.AppSettings.Settings;
-                if (settings[key] == null)
-                    return;
-                settings[key].Value = value;
-                configFile.Save(ConfigurationSaveMode.Modified);
-                ConfigurationManager.RefreshSection(configFile.AppSettings.SectionInformation.Name);
-                return;
-            }
-            Config.SetValue(key, value);
+        private string GetBindValue(string key) {
+            return ControllerMappings.Value(SelectedProfileId, key);
+        }
+
+        private void SetBindValue(string key, string value) {
+            if (!String.IsNullOrEmpty(SelectedProfileId))
+                ControllerMappings.SetValue(SelectedProfileId, key, value);
         }
 
         // serviceClient: null when this process owns the hardware directly (local mode);
         // non-null when deferring to a running service (see MainForm.btn_reassign_open_Click) -
         // determines where controller-button auto-detect actually gets its presses from.
-        public Reassign(ServiceControlClient serviceClient = null) {
+        public Reassign(ServiceControlClient serviceClient = null,
+                        IEnumerable<ControllerRecord> remoteRecords = null,
+                        string preferredProfileId = null) {
             this.serviceClient = serviceClient;
+            this.preferredProfileId = preferredProfileId;
             InitializeComponent();
+            MakeRoomForControllerSelector();
             AddGyroMouseButtons();
 
             foreach (int i in Enum.GetValues(typeof(Joycon.Button))) {
@@ -90,7 +90,7 @@ namespace BetterJoyForCemu {
 
             menu_joy_buttons.ItemClicked += Menu_joy_buttons_ItemClicked;
 
-            var specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
             specialButtons.AddRange(gyroMouseButtons);
 
             foreach (SplitButton c in specialButtons) {
@@ -101,12 +101,43 @@ namespace BetterJoyForCemu {
                 c.Menu = menu_joy_buttons;
                 c.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             }
+
+            AddControllerSelector();
+            if (remoteRecords != null)
+                SetRemoteProfiles(remoteRecords);
+            RefreshControllerChoices();
         }
 
         // Built in code, not the Designer, as a second column beside the existing one - avoids
         // hand-computing six more rows' worth of Designer.cs pixel coordinates in a single
         // column that would otherwise run the form well past its current height.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
+        private List<SplitButton> specialButtons;
+
+        private const int ControllerSelectorHeight = 36;
+
+        private void MakeRoomForControllerSelector() {
+            foreach (Control control in Controls)
+                control.Location = new Point(control.Left, control.Top + ControllerSelectorHeight);
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + ControllerSelectorHeight);
+        }
+
+        private void AddControllerSelector() {
+            var label = new Label {
+                AutoSize = true,
+                Location = new Point(15, 16),
+                Text = "Controller",
+            };
+            controllerSelector = new ComboBox {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(105, 11),
+                Size = new Size(375, 21),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            };
+            controllerSelector.SelectedIndexChanged += ControllerSelector_SelectedIndexChanged;
+            Controls.Add(label);
+            Controls.Add(controllerSelector);
+        }
 
         private void AddGyroMouseButtons() {
             // Short labels + a shared section header instead of repeating "(Gyro Mouse)" on each
@@ -126,12 +157,12 @@ namespace BetterJoyForCemu {
             const int buttonWidth = 130;
             // Lines up with the left column's row 2-6 rhythm (btn_home..btn_sr_r), leaving row 1's
             // slot free for the header below.
-            const int entryStartY = 41;
+            const int entryStartY = 41 + ControllerSelectorHeight;
             const int rowSpacing = 29;
 
             var header = new Label {
                 AutoSize = true,
-                Location = new Point(col2LabelX, 17),
+                Location = new Point(col2LabelX, 17 + ControllerSelectorHeight),
                 Text = "Gyro Mouse Only",
                 Font = new Font(Font, FontStyle.Bold),
             };
@@ -163,6 +194,110 @@ namespace BetterJoyForCemu {
             ClientSize = new Size(Math.Max(ClientSize.Width, col2ButtonX + buttonWidth + 15), ClientSize.Height);
         }
 
+        private void SetRemoteProfiles(IEnumerable<ControllerRecord> records) {
+            var byProfile = new Dictionary<string, ControllerProfileInfo>(StringComparer.Ordinal);
+            if (records != null) {
+                foreach (ControllerRecord record in records) {
+                    if (String.IsNullOrEmpty(record.ProfileId))
+                        continue;
+
+                    ControllerProfileInfo existing;
+                    if (!byProfile.TryGetValue(record.ProfileId, out existing) ||
+                        record.ConnectionSequence > existing.ConnectionSequence) {
+                        byProfile[record.ProfileId] = new ControllerProfileInfo {
+                            ProfileId = record.ProfileId,
+                            DisplayName = String.IsNullOrEmpty(record.ProfileName)
+                                ? "Controller " + (record.PadId + 1)
+                                : record.ProfileName,
+                            ConnectionSequence = record.ConnectionSequence,
+                        };
+                    }
+                }
+            }
+
+            remoteProfiles.Clear();
+            remoteProfiles.AddRange(byProfile.Values.OrderByDescending(p => p.ConnectionSequence));
+        }
+
+        private void ServiceClient_SnapshotReceived(List<ControllerRecord> records) {
+            if (InvokeRequired) {
+                BeginInvoke(new Action<List<ControllerRecord>>(ServiceClient_SnapshotReceived), records);
+                return;
+            }
+
+            SetRemoteProfiles(records);
+            RefreshControllerChoices();
+        }
+
+        private void RefreshControllerChoices() {
+            List<ControllerProfileInfo> choices = serviceClient != null
+                ? remoteProfiles.OrderByDescending(p => p.ConnectionSequence).ToList()
+                : ControllerMappings.ConnectedProfiles(Program.mgr?.j);
+
+            string selectedId = SelectedProfileId;
+            long newest = choices.Count == 0 ? -1 : choices.Max(p => p.ConnectionSequence);
+            string targetId = selectedId;
+
+            if (initialControllerSelection) {
+                targetId = choices.Any(p => p.ProfileId == preferredProfileId)
+                    ? preferredProfileId
+                    : choices.FirstOrDefault()?.ProfileId;
+            } else if (newest > newestControllerSequence) {
+                // A genuinely new connection arrived while the dialog was open. Match the same
+                // default as opening the dialog: the most recently connected logical controller.
+                targetId = choices.FirstOrDefault()?.ProfileId;
+            } else if (!choices.Any(p => p.ProfileId == selectedId)) {
+                // Join/split changes the logical profile ID without creating a new Joycon.
+                targetId = choices.FirstOrDefault()?.ProfileId;
+            }
+
+            bool changed = controllerSelector.Items.Count != choices.Count;
+            if (!changed) {
+                for (int i = 0; i < choices.Count; i++) {
+                    ControllerProfileInfo current = controllerSelector.Items[i] as ControllerProfileInfo;
+                    if (current == null || current.ProfileId != choices[i].ProfileId ||
+                        current.DisplayName != choices[i].DisplayName) {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+
+            updatingControllerSelector = true;
+            if (changed) {
+                controllerSelector.Items.Clear();
+                controllerSelector.Items.AddRange(choices.Cast<object>().ToArray());
+            }
+
+            ControllerProfileInfo target = controllerSelector.Items.Cast<ControllerProfileInfo>()
+                .FirstOrDefault(p => p.ProfileId == targetId);
+            controllerSelector.SelectedItem = target;
+            if (target == null)
+                controllerSelector.SelectedIndex = -1;
+            updatingControllerSelector = false;
+
+            newestControllerSequence = newest;
+            initialControllerSelection = false;
+            ApplySelectedController();
+        }
+
+        private void ControllerSelector_SelectedIndexChanged(object sender, EventArgs e) {
+            if (!updatingControllerSelector)
+                ApplySelectedController();
+        }
+
+        private void ApplySelectedController() {
+            CancelComboCapture();
+            joyPrevButtons.Clear();
+
+            bool hasController = !String.IsNullOrEmpty(SelectedProfileId);
+            foreach (SplitButton button in specialButtons) {
+                button.Enabled = hasController;
+                GetPrettyName(button);
+            }
+            btn_apply.Enabled = hasController;
+        }
+
         private void Menu_joy_buttons_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
             Control c = sender as Control;
 
@@ -182,7 +317,7 @@ namespace BetterJoyForCemu {
                     break;
                 case MouseButtons.Middle:
                     CancelComboCapture();
-                    SetBindValue((string)c.Tag, Config.GetDefaultValue((string)c.Tag));
+                    SetBindValue((string)c.Tag, ControllerMappings.DefaultValue((string)c.Tag));
                     GetPrettyName(c);
                     break;
                 case MouseButtons.Right:
@@ -285,19 +420,32 @@ namespace BetterJoyForCemu {
 
             if (serviceClient != null) {
                 serviceClient.ButtonTransition += ServiceClient_ButtonTransition;
+                serviceClient.SnapshotReceived += ServiceClient_SnapshotReceived;
                 serviceClient.StartButtonCapture();
+                serviceClient.RequestSnapshot();
             } else {
                 joyPoll = new Timer { Interval = 30 };
                 joyPoll.Tick += JoyPoll_Tick;
                 joyPoll.Start();
+
+                controllerRefreshTimer = new Timer { Interval = 500 };
+                controllerRefreshTimer.Tick += (s, args) => RefreshControllerChoices();
+                controllerRefreshTimer.Start();
             }
         }
 
         // Remote-mode counterpart to JoyPoll_Tick below - HeadlessJoyconHost does the identical
         // polling against its own (non-null there) Program.mgr.j and pushes each transition over
         // the control pipe instead of acting on it directly. Fires on the pipe's background read
-        // thread - HandleButtonTransition marshals onto the UI thread itself.
+        // thread - marshal here before reading the selected ComboBox profile.
         private void ServiceClient_ButtonTransition(ButtonTransitionInfo info) {
+            if (InvokeRequired) {
+                BeginInvoke(new Action<ButtonTransitionInfo>(ServiceClient_ButtonTransition), info);
+                return;
+            }
+
+            if (info.ProfileId != SelectedProfileId)
+                return;
             HandleButtonTransition(info.ButtonIndex, info.IsDown);
         }
 
@@ -327,6 +475,8 @@ namespace BetterJoyForCemu {
                 // "DPAD_DOWN+B" for one single press. Skipping the right half here leaves the left
                 // half as the one consistent, complete source per pair.
                 if (jc.other != null && jc.other != jc && !jc.isLeft)
+                    continue;
+                if (ControllerMappings.ProfileIdFor(jc) != SelectedProfileId)
                     continue;
 
                 if (!joyPrevButtons.TryGetValue(jc, out bool[] prev)) {
@@ -397,7 +547,7 @@ namespace BetterJoyForCemu {
             // but then silently do nothing, exactly the "looks bound but doesn't work" trap
             // GyroToJoyOrMouse just turned out to be. Left uncaptured so JoyPoll_Tick or the
             // right-click menu (both joy_-only) remain the way to actually assign these.
-            if (e.Data.ButtonDown != null && !AppConfigBackedKeys.Contains((string)curAssignment.Tag)) {
+            if (e.Data.ButtonDown != null && !ControllerOnlyKeys.Contains((string)curAssignment.Tag)) {
                 SetBindValue((string)curAssignment.Tag, "mse_" + ((int)e.Data.ButtonDown.Button));
                 AsyncPrettyName(curAssignment);
                 curAssignment = null;
@@ -419,7 +569,7 @@ namespace BetterJoyForCemu {
             }
 
             // See the same guard in Mouse_MouseEvent above.
-            if (e.Data.KeyDown != null && !AppConfigBackedKeys.Contains((string)curAssignment.Tag)) {
+            if (e.Data.KeyDown != null && !ControllerOnlyKeys.Contains((string)curAssignment.Tag)) {
                 SetBindValue((string)curAssignment.Tag, "key_" + ((int)e.Data.KeyDown.Key));
                 AsyncPrettyName(curAssignment);
                 curAssignment = null;
@@ -428,15 +578,18 @@ namespace BetterJoyForCemu {
         }
 
         private void Reassign_FormClosing(object sender, FormClosingEventArgs e) {
-            keyboard.Dispose();
-            mouse.Dispose();
+            keyboard?.Dispose();
+            mouse?.Dispose();
             joyPoll?.Stop();
             joyPoll?.Dispose();
+            controllerRefreshTimer?.Stop();
+            controllerRefreshTimer?.Dispose();
             comboTimeout?.Stop();
             comboTimeout?.Dispose();
 
             if (serviceClient != null) {
                 serviceClient.ButtonTransition -= ServiceClient_ButtonTransition;
+                serviceClient.SnapshotReceived -= ServiceClient_SnapshotReceived;
                 serviceClient.StopButtonCapture();
             }
         }
@@ -470,7 +623,7 @@ namespace BetterJoyForCemu {
         }
 
         private void btn_apply_Click(object sender, EventArgs e) {
-            Config.Save();
+            ControllerMappings.Save();
         }
 
         private void btn_close_Click(object sender, EventArgs e) {

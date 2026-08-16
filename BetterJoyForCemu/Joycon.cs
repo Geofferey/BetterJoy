@@ -34,7 +34,10 @@ namespace BetterJoyForCemu {
                 return _other;
             }
             set {
+                if (_other != value)
+                    PrepareForMappingProfileChange();
                 _other = value;
+                mappingProfileId = null;
 
                 // Queued (RequestLEDUpdate), not written directly - this setter runs on
                 // whatever thread is doing the join/split (scan thread for auto-join, UI/pipe
@@ -81,16 +84,58 @@ namespace BetterJoyForCemu {
         // is active. Keep this mask separate from buttons[]: special actions and UDP still need
         // the real input; only the virtual Xbox/DS4 report should consume it. The snapshot is
         // reused to avoid adding per-report garbage collection to the latency-sensitive path.
-        private static readonly string[] GyroOnlyAppConfigBindKeys = {
+        private static readonly string[] GyroOnlyBindKeys = {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
             "clench_gyro"
         };
-        // One extra slot holds reset_mouse, which lives in Config's legacy settings file rather
-        // than AppSettings but is now gyro-mouse-only under the same active gate.
+        // One extra slot holds reset_mouse, which is also gyro-mouse-only under the same active
+        // gate. All seven values come from the current logical controller profile.
         private readonly string[] lastGyroOnlyBindValues =
-            new string[GyroOnlyAppConfigBindKeys.Length + 1];
+            new string[GyroOnlyBindKeys.Length + 1];
         private readonly bool[] gyroOnlyReservedButtons = new bool[20];
         private readonly bool[] vigemButtons = new bool[20];
+        private string mappingProfileId;
+
+        private string MappingValue(string key) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+            return ControllerMappings.Value(mappingProfileId, key);
+        }
+
+        // Join/split changes which mapping profile this physical half belongs to. Release any
+        // synthetic holds under the old profile before changing topology; otherwise pressing an
+        // SL/SR mouse/key bind while joined and releasing it after a split would look up the new
+        // solo bind for the release and could leave the old profile's key stuck down forever.
+        private void PrepareForMappingProfileChange() {
+            if (form == null)
+                return;
+
+            ReleaseGyroMouseActions();
+            ReleaseMappedHold(MappingValue(isLeft ? "sl_l" : "sl_r"));
+            ReleaseMappedHold(MappingValue(isLeft ? "sr_l" : "sr_r"));
+            if (hasShaked)
+                ReleaseMappedHold(MappingValue("shake"));
+
+            hasShaked = false;
+            mouse_toggle_btn.Clear();
+            active_gyro = false;
+            prevActiveGyroComboHeld = false;
+            prevResetMouseComboHeld = false;
+            gyroMouseClenched = false;
+        }
+
+        private void ReleaseMappedHold(string mapping) {
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return;
+
+            foreach (string part in mapping.Split('+')) {
+                int code;
+                if (part.StartsWith("key_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateKeyRelease(code);
+                else if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateButtonRelease(code);
+            }
+        }
 
         // A bind is one or more "joy_N"/"key_N"/"mse_N" parts joined with "+" (a single part is
         // just a combo of one) - true only when every part is currently held at once. Controller
@@ -118,21 +163,20 @@ namespace BetterJoyForCemu {
             return true;
         }
 
-        // Rebuild only when a bind actually changes. AppSettings is live-refreshed by both the
-        // local Map Special Buttons dialog and the service config watcher, so this also picks up
-        // remote edits without reconnecting the controller.
+        // Rebuild only when a bind actually changes. ControllerMappings is live-reloaded by the
+        // service watcher, so this also picks up remote edits without reconnecting the controller.
         private void RefreshGyroOnlyButtonReservations() {
             bool changed = false;
-            for (int i = 0; i < GyroOnlyAppConfigBindKeys.Length; i++) {
-                string value = ConfigurationManager.AppSettings[GyroOnlyAppConfigBindKeys[i]] ?? "0";
+            for (int i = 0; i < GyroOnlyBindKeys.Length; i++) {
+                string value = MappingValue(GyroOnlyBindKeys[i]);
                 if (lastGyroOnlyBindValues[i] != value) {
                     lastGyroOnlyBindValues[i] = value;
                     changed = true;
                 }
             }
 
-            int resetMouseSlot = GyroOnlyAppConfigBindKeys.Length;
-            string resetMouseValue = Config.Value("reset_mouse");
+            int resetMouseSlot = GyroOnlyBindKeys.Length;
+            string resetMouseValue = MappingValue("reset_mouse");
             if (String.IsNullOrEmpty(resetMouseValue))
                 resetMouseValue = "0";
             if (lastGyroOnlyBindValues[resetMouseSlot] != resetMouseValue) {
@@ -169,7 +213,7 @@ namespace BetterJoyForCemu {
 
         private bool IsGyroMouseActive() {
             return OwnsGyroMouse() &&
-                (Config.Value("active_gyro") == "0" || active_gyro);
+                (MappingValue("active_gyro") == "0" || active_gyro);
         }
 
         // A joined pair's ViGEm target stays on whichever half connected first, while gyro-mouse
@@ -623,6 +667,7 @@ namespace BetterJoyForCemu {
 
                 if (a[3] == 0x3) {
                     PadMacAddress = new PhysicalAddress(new byte[] { a[9], a[8], a[7], a[6], a[5], a[4] });
+                    mappingProfileId = null;
                 }
 
                 // USB Pairing
@@ -890,14 +935,14 @@ namespace BetterJoyForCemu {
                     hasShaked = true;
 
                     // Mapped shake key down
-                    Simulate(Config.Value("shake"), false, false);
+                    Simulate(MappingValue("shake"), false, false);
                     DebugPrint("Shaked at time: " + shakedTime.ToString(), DebugType.SHAKE);
                 }
 
                 // If controller was shaked then release mapped key after a small delay to simulate a button press, then reset hasShaked
                 if (hasShaked && currentShakeTime >= shakedTime + 10) {
                     // Mapped shake key up
-                    Simulate(Config.Value("shake"), false, true);
+                    Simulate(MappingValue("shake"), false, true);
                     DebugPrint("Shake completed", DebugType.SHAKE);
                     hasShaked = false;
                 }
@@ -1063,36 +1108,36 @@ namespace BetterJoyForCemu {
             DetectShake();
 
             if (buttons_down[(int)Button.CAPTURE])
-                Simulate(Config.Value("capture"));
+                Simulate(MappingValue("capture"));
             if (buttons_down[(int)Button.HOME])
-                Simulate(Config.Value("home"));
-            SimulateContinous((int)Button.CAPTURE, Config.Value("capture"));
-            SimulateContinous((int)Button.HOME, Config.Value("home"));
+                Simulate(MappingValue("home"));
+            SimulateContinous((int)Button.CAPTURE, MappingValue("capture"));
+            SimulateContinous((int)Button.HOME, MappingValue("home"));
 
             if (isLeft) {
                 if (buttons_down[(int)Button.SL])
-                    Simulate(Config.Value("sl_l"), false, false);
+                    Simulate(MappingValue("sl_l"), false, false);
                 if (buttons_up[(int)Button.SL])
-                    Simulate(Config.Value("sl_l"), false, true);
+                    Simulate(MappingValue("sl_l"), false, true);
                 if (buttons_down[(int)Button.SR])
-                    Simulate(Config.Value("sr_l"), false, false);
+                    Simulate(MappingValue("sr_l"), false, false);
                 if (buttons_up[(int)Button.SR])
-                    Simulate(Config.Value("sr_l"), false, true);
+                    Simulate(MappingValue("sr_l"), false, true);
 
-                SimulateContinous((int)Button.SL, Config.Value("sl_l"));
-                SimulateContinous((int)Button.SR, Config.Value("sr_l"));
+                SimulateContinous((int)Button.SL, MappingValue("sl_l"));
+                SimulateContinous((int)Button.SR, MappingValue("sr_l"));
             } else {
                 if (buttons_down[(int)Button.SL])
-                    Simulate(Config.Value("sl_r"), false, false);
+                    Simulate(MappingValue("sl_r"), false, false);
                 if (buttons_up[(int)Button.SL])
-                    Simulate(Config.Value("sl_r"), false, true);
+                    Simulate(MappingValue("sl_r"), false, true);
                 if (buttons_down[(int)Button.SR])
-                    Simulate(Config.Value("sr_r"), false, false);
+                    Simulate(MappingValue("sr_r"), false, false);
                 if (buttons_up[(int)Button.SR])
-                    Simulate(Config.Value("sr_r"), false, true);
+                    Simulate(MappingValue("sr_r"), false, true);
 
-                SimulateContinous((int)Button.SL, Config.Value("sl_r"));
-                SimulateContinous((int)Button.SR, Config.Value("sr_r"));
+                SimulateContinous((int)Button.SL, MappingValue("sl_r"));
+                SimulateContinous((int)Button.SR, MappingValue("sr_r"));
             }
 
             // Filtered IMU data
@@ -1108,7 +1153,7 @@ namespace BetterJoyForCemu {
             // report. "0" means always enabled and therefore has no explicit inactive->active
             // edge to center on. A real activation bind centers only when it turns gyro on, not
             // when toggle mode turns it off or on every packet while hold mode remains held.
-            string activeGyroCombo = Config.Value("active_gyro");
+            string activeGyroCombo = MappingValue("active_gyro");
             bool gyroWasEnabled = activeGyroCombo == "0" || active_gyro;
             if (activeGyroCombo != "0") {
                 bool comboHeld = IsComboHeld(activeGyroCombo);
@@ -1127,7 +1172,7 @@ namespace BetterJoyForCemu {
             bool gyroMouseActionsEnabled = ownsGyroMouse && gyroEnabled;
             bool gyroMouseJustEnabled = ownsGyroMouse && !gyroWasEnabled && gyroEnabled;
 
-            string clenchGyroVal = ConfigurationManager.AppSettings["clench_gyro"] ?? "0";
+            string clenchGyroVal = MappingValue("clench_gyro");
             gyroMouseClenched = gyroMouseActionsEnabled && clenchGyroVal != "0" &&
                 IsComboHeld(clenchGyroVal);
 
@@ -1137,7 +1182,7 @@ namespace BetterJoyForCemu {
             // reset_mouse for compatibility. Keep tracking the bind edge while gyro-mouse is
             // inactive, but do not let it reset orientation or move the pointer unless this
             // controller currently owns active gyro-mouse output.
-            string resetMouseVal = Config.Value("reset_mouse");
+            string resetMouseVal = MappingValue("reset_mouse");
             bool manualRecenterRequested = false;
             if (resetMouseVal != "0") {
                 bool resetMouseHeld = IsComboHeld(resetMouseVal);
@@ -1906,7 +1951,7 @@ namespace BetterJoyForCemu {
             // Keep learning the selected controller's zero-rate bias while gyro-mouse is
             // inactive, so activating it after the controller has been resting does not begin
             // with half a second of cursor crawl.
-            bool gyroPointerActive = Config.Value("active_gyro") == "0" || active_gyro;
+            bool gyroPointerActive = MappingValue("active_gyro") == "0" || active_gyro;
             Vector3 mouseGyroRate = gyr_g;
             Vector3 mouseAccel = acc_g;
             if (UseFilteredIMU) {
@@ -2043,12 +2088,12 @@ namespace BetterJoyForCemu {
                 MoveGyroMouseBy(dx, dy);
         }
 
-        // left_click/right_click/center_click/scroll_up/scroll_down (see App.config's comment on
-        // them) - bindable controller buttons that simulate a mouse action, reachable only from
+        // left_click/right_click/center_click/scroll_up/scroll_down - bindable controller
+        // buttons that simulate a mouse action, reachable only from
         // inside the same "gyro-mouse is actually active" block as the cursor movement above, so
         // they're inert the rest of the time rather than stealing a button from its normal game
-        // mapping. Read fresh from AppSettings each call, not cached in a field the way most
-        // other settings here are - so a newly-bound key takes effect immediately instead of
+        // mapping. Read fresh from the profile snapshot each call, not cached in a field the way
+        // most other settings here are - so a newly-bound key takes effect immediately instead of
         // needing the controller to reconnect first. Can be a combo like every other bind now
         // (see Reassign.cs), which IsComboHeld handles - this used to be a bare
         // Int32.Parse(val.Substring(4)) on the whole value, which crashed the poll thread with a
@@ -2056,7 +2101,7 @@ namespace BetterJoyForCemu {
         private readonly Dictionary<string, bool> gyroMouseComboHeld = new Dictionary<string, bool>();
 
         private void SimulateGyroMouseButton(string configKey, int buttonCode, bool enabled) {
-            string val = ConfigurationManager.AppSettings[configKey] ?? "0";
+            string val = MappingValue(configKey);
             bool held = enabled && val != "0" && IsComboHeld(val);
             bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
             gyroMouseComboHeld[configKey] = held;
@@ -2070,7 +2115,7 @@ namespace BetterJoyForCemu {
         // Scroll has no hold/release equivalent - just a discrete tick per press, matching a
         // physical scroll wheel's own click detents rather than a continuous rate while held.
         private void SimulateGyroMouseScroll(string configKey, bool up, bool enabled) {
-            string val = ConfigurationManager.AppSettings[configKey] ?? "0";
+            string val = MappingValue(configKey);
             bool held = enabled && val != "0" && IsComboHeld(val);
             bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
             gyroMouseComboHeld[configKey] = held;
@@ -2791,7 +2836,7 @@ namespace BetterJoyForCemu {
             }
 
             // overwrite guide button if it's custom-mapped
-            if (Config.Value("home") != "0")
+            if (input.MappingValue("home") != "0")
                 output.guide = false;
 
             if (!(isSnes || is64)) {
@@ -2967,7 +3012,7 @@ namespace BetterJoyForCemu {
             }
 
             // overwrite guide button if it's custom-mapped
-            if (Config.Value("home") != "0")
+            if (input.MappingValue("home") != "0")
                 output.ps = false;
 
             if (!(isSnes || is64)) {

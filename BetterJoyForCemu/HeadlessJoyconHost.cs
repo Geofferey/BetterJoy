@@ -47,6 +47,7 @@ namespace BetterJoyForCemu {
         public void CollapseJoinedPair(Joycon left, Joycon right) { BroadcastSnapshot(); }
         public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) { BroadcastSnapshot(); }
         public void UpdateBatteryColor(Joycon joycon) { BroadcastSnapshot(); }
+        public void RefreshControllerState() { BroadcastSnapshot(); }
 
         public void NotifyLowBattery(Joycon joycon) {
             AppendTextBox(String.Format("Controller {0} - low battery.", joycon.PadId));
@@ -763,6 +764,8 @@ namespace BetterJoyForCemu {
                 if (jc.other != null && jc.other != jc && !jc.isLeft)
                     continue;
 
+                string profileId = ControllerMappings.ProfileIdFor(jc);
+
                 if (!buttonCapturePrev.TryGetValue(jc, out bool[] prev)) {
                     prev = new bool[buttonCount];
                     for (int bi = 0; bi < buttonCount; bi++)
@@ -778,7 +781,7 @@ namespace BetterJoyForCemu {
                     prev[bi] = now;
                     int capturedBi = bi;
                     bool capturedNow = now;
-                    SendControlMessage(w => ServiceControlIpc.WriteButtonTransition(w, capturedBi, capturedNow));
+                    SendControlMessage(w => ServiceControlIpc.WriteButtonTransition(w, profileId, capturedBi, capturedNow));
                 }
             }
         }
@@ -800,12 +803,16 @@ namespace BetterJoyForCemu {
                     : ControllerKind.Right;
 
                 sbyte otherPadId = (jc.other != null && jc.other != jc) ? (sbyte)jc.other.PadId : (sbyte)-1;
+                ControllerProfileInfo profile = ControllerMappings.ProfileFor(jc);
 
                 records.Add(new ControllerRecord {
                     PadId = (byte)jc.PadId,
                     Kind = kind,
                     Battery = (sbyte)jc.battery,
                     OtherPadId = otherPadId,
+                    ProfileId = profile.ProfileId,
+                    ProfileName = profile.DisplayName,
+                    ConnectionSequence = profile.ConnectionSequence,
                 });
             }
             return records;
@@ -833,7 +840,8 @@ namespace BetterJoyForCemu {
         // ---------------------------------------------------------------------------------
 
         private static readonly HashSet<string> WatchedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
-            "settings", "BetterJoyForCemu.exe.config", "3rdPartyControllers", "BlacklistedControllers",
+            "settings", "BetterJoyForCemu.exe.config", ControllerMappings.FileName,
+            "3rdPartyControllers", "BlacklistedControllers",
         };
 
         private FileSystemWatcher configWatcher;
@@ -869,6 +877,7 @@ namespace BetterJoyForCemu {
                 // calibration is handled entirely in-process by StartCalibration and never
                 // needs a file-driven reload, so there's no reason to risk it here.
                 Config.ReloadSettingsOnly();
+                ControllerMappings.Reload();
                 ConfigurationManager.RefreshSection("appSettings");
 
                 // Program.thirdPartyCons/blacklistedCons are plain Lists a scan pass iterates

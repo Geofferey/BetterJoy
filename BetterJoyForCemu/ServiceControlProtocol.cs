@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -42,12 +43,18 @@ namespace BetterJoyForCemu {
         public ControllerKind Kind;
         public sbyte Battery;
         public sbyte OtherPadId;
+        public string ProfileId;
+        public string ProfileName;
+        public long ConnectionSequence;
 
         public void WriteTo(BinaryWriter writer) {
             writer.Write(PadId);
             writer.Write((byte)Kind);
             writer.Write(Battery);
             writer.Write(OtherPadId);
+            writer.Write(ProfileId ?? String.Empty);
+            writer.Write(ProfileName ?? String.Empty);
+            writer.Write(ConnectionSequence);
         }
 
         public static ControllerRecord ReadFrom(BinaryReader reader) {
@@ -56,6 +63,9 @@ namespace BetterJoyForCemu {
                 Kind = (ControllerKind)reader.ReadByte(),
                 Battery = reader.ReadSByte(),
                 OtherPadId = reader.ReadSByte(),
+                ProfileId = reader.ReadString(),
+                ProfileName = reader.ReadString(),
+                ConnectionSequence = reader.ReadInt64(),
             };
         }
     }
@@ -83,11 +93,11 @@ namespace BetterJoyForCemu {
     }
 
     // A connected controller's button just went down or up - pushed only while a GUI has
-    // requested it (StartButtonCapture), so it costs nothing the rest of the time. Controller-
-    // agnostic on purpose, matching the local polling equivalent (Reassign.JoyPoll_Tick) and the
-    // existing joy_N bind format itself - a bind never distinguishes which physical controller
-    // pressed button N, so neither does this.
+    // requested it (StartButtonCapture), so it costs nothing the rest of the time. ProfileId is
+    // the logical controller that produced it, allowing Map Special Buttons to ignore presses
+    // from a different physical controller while editing the selected profile.
     public struct ButtonTransitionInfo {
+        public string ProfileId;
         public int ButtonIndex;
         public bool IsDown;
     }
@@ -148,8 +158,9 @@ namespace BetterJoyForCemu {
             };
         }
 
-        public static void WriteButtonTransition(BinaryWriter writer, int buttonIndex, bool isDown) {
+        public static void WriteButtonTransition(BinaryWriter writer, string profileId, int buttonIndex, bool isDown) {
             writer.Write((byte)ControlMessageType.ButtonTransition);
+            writer.Write(profileId ?? String.Empty);
             writer.Write((byte)buttonIndex);
             writer.Write(isDown);
             writer.Flush();
@@ -157,6 +168,7 @@ namespace BetterJoyForCemu {
 
         public static ButtonTransitionInfo ReadButtonTransition(BinaryReader reader) {
             return new ButtonTransitionInfo {
+                ProfileId = reader.ReadString(),
                 ButtonIndex = reader.ReadByte(),
                 IsDown = reader.ReadBoolean(),
             };

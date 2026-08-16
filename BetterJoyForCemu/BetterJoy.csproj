@@ -144,6 +144,7 @@
     <Compile Include="CalibrationDialog.cs" />
     <Compile Include="CalibrationState.cs" />
     <Compile Include="Config.cs" />
+    <Compile Include="ControllerMappings.cs" />
     <Compile Include="Controller\OutputControllerDualShock4.cs" />
     <Compile Include="Controller\OutputControllerXbox360.cs" />
     <Compile Include="DesktopInputBackend.cs" />

@@ -33,6 +33,7 @@ namespace BetterJoyForCemu {
         // Decided once in MainForm_Load; not re-evaluated mid-session.
         private bool isRemoteMode = false;
         private ServiceControlClient serviceClient;
+        private List<ControllerRecord> lastControllerSnapshot = new List<ControllerRecord>();
 
         public enum NonOriginalController : int {
             Disabled = 0,
@@ -452,6 +453,10 @@ namespace BetterJoyForCemu {
                 this.Invoke(new Action<List<ControllerRecord>>(RenderSnapshot), new object[] { records });
                 return;
             }
+
+            lastControllerSnapshot = records == null
+                ? new List<ControllerRecord>()
+                : new List<ControllerRecord>(records);
 
             foreach (Button b in con) {
                 b.Tag = null;
@@ -1195,9 +1200,29 @@ namespace BetterJoyForCemu {
             // isRemoteMode's serviceClient, not null - Reassign uses it to relay controller-
             // button presses for its "left-click then press" auto-detect, which otherwise has no
             // Joycon instances of its own to poll when the service owns the hardware.
-            Reassign mapForm = new Reassign(isRemoteMode ? serviceClient : null);
+            string preferredProfileId = null;
+            Button sourceButton = sender as Button;
+            if (sourceButton != null) {
+                if (!isRemoteMode && sourceButton.Tag is Joycon)
+                    preferredProfileId = ControllerMappings.ProfileIdFor((Joycon)sourceButton.Tag);
+                else if (isRemoteMode && sourceButton.Tag is int) {
+                    int padId = (int)sourceButton.Tag;
+                    ControllerRecord record = lastControllerSnapshot.FirstOrDefault(r => r.PadId == padId);
+                    preferredProfileId = record.ProfileId;
+                }
+            }
+
+            Reassign mapForm = new Reassign(
+                isRemoteMode ? serviceClient : null,
+                isRemoteMode ? lastControllerSnapshot : null,
+                preferredProfileId);
             mapForm.ShowDialog();
         }
+
+        // Local mapping dialogs read the live Joycon objects directly. The headless host uses
+        // this hook to push a fresh service snapshot after a USB handshake resolves the real
+        // per-unit MAC; no additional main-window rendering is needed here.
+        public void RefreshControllerState() { }
 
         // The dialog has one button whose meaning depends on where we are: first click in a
         // phase starts it (begins sample admission, and for gyro also starts its countdown);

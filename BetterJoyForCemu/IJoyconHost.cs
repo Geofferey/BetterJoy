@@ -15,6 +15,7 @@ namespace BetterJoyForCemu {
         void JoinOrSplitJoycon(Joycon joycon);
         void NotifyLowBattery(Joycon joycon);
         void UpdateBatteryColor(Joycon joycon);
+        void RefreshControllerState();
 
         // Called from the controller's own Poll thread (see Joycon.DoThingsWithButtons) when a
         // face button is pressed while CalibrationState.PendingConfirmController names this exact
