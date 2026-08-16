@@ -13,10 +13,12 @@ namespace BetterJoyForCemu {
     // OnMouseButtonDown/OnMouseButtonUp for that.
     internal static class InputHelper {
         public static void Run(string pipeName) {
+            var desktopInput = new DesktopInputBackend();
             var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             try {
                 pipe.Connect(5000);
             } catch {
+                desktopInput.Dispose();
                 return; // service isn't listening (torn down/superseded before we connected)
             }
 
@@ -55,7 +57,7 @@ namespace BetterJoyForCemu {
                 try {
                     while (pipe.IsConnected) {
                         InputMessage msg = InputMessage.ReadFrom(reader);
-                        Execute(msg);
+                        Execute(msg, desktopInput);
                     }
                 } catch {
                     // pipe closed/service gone - fall through and stop the message pump below
@@ -68,6 +70,7 @@ namespace BetterJoyForCemu {
 
             keyboard.Dispose();
             mouse.Dispose();
+            desktopInput.Dispose();
             try { pipe.Dispose(); } catch { }
         }
 
@@ -85,41 +88,40 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private static void Execute(InputMessage msg) {
+        private static void Execute(InputMessage msg, DesktopInputBackend desktopInput) {
             switch (msg.Type) {
                 case InputMessageType.SimulateKeyClick:
-                    WindowsInput.Simulate.Events().Click((WindowsInput.Events.KeyCode)msg.A).Invoke();
+                    desktopInput.KeyClick(msg.A);
                     break;
                 case InputMessageType.SimulateKeyHold:
-                    WindowsInput.Simulate.Events().Hold((WindowsInput.Events.KeyCode)msg.A).Invoke();
+                    desktopInput.KeyHold(msg.A);
                     break;
                 case InputMessageType.SimulateKeyRelease:
-                    WindowsInput.Simulate.Events().Release((WindowsInput.Events.KeyCode)msg.A).Invoke();
+                    desktopInput.KeyRelease(msg.A);
                     break;
                 case InputMessageType.SimulateButtonClick:
-                    WindowsInput.Simulate.Events().Click((WindowsInput.Events.ButtonCode)msg.A).Invoke();
+                    desktopInput.ButtonClick(msg.A);
                     break;
                 case InputMessageType.SimulateButtonHold:
-                    WindowsInput.Simulate.Events().Hold((WindowsInput.Events.ButtonCode)msg.A).Invoke();
+                    desktopInput.ButtonHold(msg.A);
                     break;
                 case InputMessageType.SimulateButtonRelease:
-                    WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)msg.A).Invoke();
+                    desktopInput.ButtonRelease(msg.A);
                     break;
                 case InputMessageType.SimulateMoveTo:
-                    WindowsInput.Simulate.Events().MoveTo(msg.A, msg.B).Invoke();
+                    desktopInput.MoveTo(msg.A, msg.B);
                     break;
                 case InputMessageType.SimulateMoveBy:
-                    WindowsInput.Simulate.Events().MoveBy(msg.A, msg.B).Invoke();
+                    desktopInput.MoveBy(msg.A, msg.B);
                     break;
                 case InputMessageType.SimulateCursorMoveBy:
-                    var current = Cursor.Position;
-                    Cursor.Position = new System.Drawing.Point(current.X + msg.A, current.Y + msg.B);
+                    desktopInput.CursorMoveBy(msg.A, msg.B);
                     break;
                 case InputMessageType.SimulateMoveToScreenCenter:
-                    WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
+                    desktopInput.MoveToScreenCenter();
                     break;
                 case InputMessageType.SimulateScroll:
-                    WindowsInput.Simulate.Events().Scroll(WindowsInput.Events.ButtonCode.VScroll, msg.A != 0 ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+                    desktopInput.Scroll(msg.A != 0);
                     break;
             }
         }

@@ -146,6 +146,7 @@
     <Compile Include="Config.cs" />
     <Compile Include="Controller\OutputControllerDualShock4.cs" />
     <Compile Include="Controller\OutputControllerXbox360.cs" />
+    <Compile Include="DesktopInputBackend.cs" />
     <Compile Include="EntryPoint.cs" />
     <Compile Include="HeadlessJoyconHost.cs" />
     <Compile Include="HIDapi.cs" />
@@ -192,6 +193,12 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Drivers\HidHide_1.5.230_x64.exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\FakerInput_Setup_0.1.1_x64.msi">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\FakerInput-LICENSE.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <None Include="packages.config" />

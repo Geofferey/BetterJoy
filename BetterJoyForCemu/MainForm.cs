@@ -24,6 +24,7 @@ namespace BetterJoyForCemu {
         private Timer countDown;
         private int count;
         private Timer clickTimer;
+        private readonly DesktopInputBackend desktopInput;
 
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
@@ -40,6 +41,7 @@ namespace BetterJoyForCemu {
         }
 
         public MainForm() {
+            desktopInput = new DesktopInputBackend();
             clickTimer = new Timer { Interval = 250 };
             clickTimer.Tick += ClickTimer_Tick;
 
@@ -241,6 +243,7 @@ namespace BetterJoyForCemu {
                 if (!isRemoteMode)
                     Program.Stop();
             } catch { } finally {
+                desktopInput.Dispose();
                 Environment.Exit(0);
             }
         }
@@ -280,51 +283,50 @@ namespace BetterJoyForCemu {
             console.AppendText(value);
         }
 
-        // GUI mode always has an interactive desktop of its own, so these just call
-        // WindowsInput.Simulate directly - same as this code always has.
+        // GUI and service-helper modes share the same optional virtual-HID backend so elevated
+        // windows behave identically regardless of which process currently owns the controllers.
         public void SimulateKeyClick(int keyCode) {
-            WindowsInput.Simulate.Events().Click((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            desktopInput.KeyClick(keyCode);
         }
 
         public void SimulateKeyHold(int keyCode) {
-            WindowsInput.Simulate.Events().Hold((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            desktopInput.KeyHold(keyCode);
         }
 
         public void SimulateKeyRelease(int keyCode) {
-            WindowsInput.Simulate.Events().Release((WindowsInput.Events.KeyCode)keyCode).Invoke();
+            desktopInput.KeyRelease(keyCode);
         }
 
         public void SimulateButtonClick(int buttonCode) {
-            WindowsInput.Simulate.Events().Click((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+            desktopInput.ButtonClick(buttonCode);
         }
 
         public void SimulateButtonHold(int buttonCode) {
-            WindowsInput.Simulate.Events().Hold((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+            desktopInput.ButtonHold(buttonCode);
         }
 
         public void SimulateButtonRelease(int buttonCode) {
-            WindowsInput.Simulate.Events().Release((WindowsInput.Events.ButtonCode)buttonCode).Invoke();
+            desktopInput.ButtonRelease(buttonCode);
         }
 
         public void SimulateMoveTo(int x, int y) {
-            WindowsInput.Simulate.Events().MoveTo(x, y).Invoke();
+            desktopInput.MoveTo(x, y);
         }
 
         public void SimulateMoveBy(int dx, int dy) {
-            WindowsInput.Simulate.Events().MoveBy(dx, dy).Invoke();
+            desktopInput.MoveBy(dx, dy);
         }
 
         public void SimulateCursorMoveBy(int dx, int dy) {
-            Point current = Cursor.Position;
-            Cursor.Position = new Point(current.X + dx, current.Y + dy);
+            desktopInput.CursorMoveBy(dx, dy);
         }
 
         public void SimulateMoveToScreenCenter() {
-            WindowsInput.Simulate.Events().MoveTo(Screen.PrimaryScreen.Bounds.Width / 2, Screen.PrimaryScreen.Bounds.Height / 2).Invoke();
+            desktopInput.MoveToScreenCenter();
         }
 
         public void SimulateScroll(bool up) {
-            WindowsInput.Simulate.Events().Scroll(WindowsInput.Events.ButtonCode.VScroll, up ? WindowsInput.Events.ButtonScrollDirection.Forwards : WindowsInput.Events.ButtonScrollDirection.Backwards).Invoke();
+            desktopInput.Scroll(up);
         }
 
         private static bool IsBetterJoyServiceRunning() {

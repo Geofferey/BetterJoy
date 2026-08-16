@@ -6,6 +6,7 @@
 #define MyBuildDir "..\BetterJoyForCemu\bin\x64\Release"
 #define MyViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define MyHidHideInstaller "HidHide_1.5.230_x64.exe"
+#define MyFakerInputInstaller "FakerInput_Setup_0.1.1_x64.msi"
 
 [Setup]
 ; Same GUID as the project's ProjectGuid, so upgrades are detected correctly across releases.
@@ -37,6 +38,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
+Name: "fakerinput"; Description: "Install FakerInput virtual mouse (controller mouse works in elevated apps and UAC)"; GroupDescription: "Drivers:"; Flags: unchecked
 Name: "service"; Description: "Run BetterJoy as a Windows Service (starts before login)"; GroupDescription: "Advanced:"; Flags: unchecked
 
 [Files]
@@ -69,6 +71,7 @@ Type: filesandordirs; Name: "{app}"
 // instead of it being silently lost.
 var
   HidHideExitCode: Integer;
+  FakerInputExitCode: Integer;
   WasServiceRunningBeforeUpgrade: Boolean;
 
 // Real service-status polling via the SCM API - sc.exe stop only requests the stop and returns
@@ -126,6 +129,22 @@ begin
     end;
   finally
     CloseServiceHandle(SCManager);
+  end;
+end;
+
+// FakerInput is an MSI rather than a bootstrapper. It stays an explicit installer task because
+// virtual input is optional and installing a system driver should always be a conscious choice.
+procedure InstallFakerInput;
+var
+  ResultCode: Integer;
+  Params: String;
+begin
+  if WizardIsTaskSelected('fakerinput') then begin
+    Params := '/i "' + ExpandConstant('{app}\Drivers\{#MyFakerInputInstaller}') + '" /qn /norestart';
+    if Exec(ExpandConstant('{sys}\msiexec.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      FakerInputExitCode := ResultCode
+    else
+      FakerInputExitCode := -1;
   end;
 end;
 
@@ -198,6 +217,7 @@ begin
     StopExistingService;
   end;
   if CurStep = ssPostInstall then begin
+    InstallFakerInput;
     InstallHidHide;
     InstallService;
   end;
@@ -205,5 +225,5 @@ end;
 
 function NeedsRestart(): Boolean;
 begin
-  Result := (HidHideExitCode = 3010);
+  Result := (HidHideExitCode = 3010) or (FakerInputExitCode = 3010) or (FakerInputExitCode = 1641);
 end;
