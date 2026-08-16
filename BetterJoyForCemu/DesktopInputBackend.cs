@@ -1,6 +1,7 @@
 using Microsoft.Win32.SafeHandles;
 using System;
 using System.Configuration;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -32,6 +33,33 @@ namespace BetterJoyForCemu {
                 enabled = true;
 
             fakerInputEnabled = enabled;
+        }
+
+        // Single dispatch table for an InputMessage against a backend instance - shared by
+        // InputHelper (interactive-session helper process) and HeadlessJoyconHost (service's
+        // own pre-login/lock-screen fallback), which previously kept two independently
+        // hand-copied switches over the same InputMessageType enum. The default case makes a
+        // future enum addition that only one of those switches used to handle silently no-op
+        // loud instead - Debug.Fail rather than throw, so a Release build still executes
+        // (harmlessly dropping the unhandled message) instead of taking down a poll/pipe thread.
+        public static void Execute(InputMessage msg, DesktopInputBackend backend) {
+            switch (msg.Type) {
+                case InputMessageType.SimulateKeyClick: backend.KeyClick(msg.A); break;
+                case InputMessageType.SimulateKeyHold: backend.KeyHold(msg.A); break;
+                case InputMessageType.SimulateKeyRelease: backend.KeyRelease(msg.A); break;
+                case InputMessageType.SimulateButtonClick: backend.ButtonClick(msg.A); break;
+                case InputMessageType.SimulateButtonHold: backend.ButtonHold(msg.A); break;
+                case InputMessageType.SimulateButtonRelease: backend.ButtonRelease(msg.A); break;
+                case InputMessageType.SimulateMoveTo: backend.MoveTo(msg.A, msg.B); break;
+                case InputMessageType.SimulateMoveBy: backend.MoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateCursorMoveBy: backend.CursorMoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateWrappedCursorMoveBy: backend.WrappedCursorMoveBy(msg.A, msg.B); break;
+                case InputMessageType.SimulateMoveToScreenCenter: backend.MoveToScreenCenter(); break;
+                case InputMessageType.SimulateScroll: backend.Scroll(msg.A != 0); break;
+                default:
+                    Debug.Fail("Unhandled InputMessageType in DesktopInputBackend.Execute: " + msg.Type);
+                    break;
+            }
         }
 
         public void KeyClick(int keyCode) {

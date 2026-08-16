@@ -328,7 +328,14 @@ namespace BetterJoyForCemu {
                     // pre-login/lock-screen fallback is needed, and mouse displacement must not
                     // disappear merely because output ownership changed.
                     TransferOutputToServiceLocked();
-                    ExecuteServiceInputLocked(msg);
+
+                    // A hold was already folded into heldDesktopMouseButtons by
+                    // UpdateHeldButtonStateLocked above, so the transfer loop just re-applied it -
+                    // this only reaches here with helperReady true (the early-return above takes
+                    // any !helperReady case), so that loop always runs and always includes it.
+                    // Executing it again here would hold it a second time.
+                    if (msg.Type != InputMessageType.SimulateButtonHold)
+                        ExecuteServiceInputLocked(msg);
                 }
             }
         }
@@ -341,20 +348,7 @@ namespace BetterJoyForCemu {
         }
 
         private void ExecuteServiceInputLocked(InputMessage msg) {
-            switch (msg.Type) {
-                case InputMessageType.SimulateKeyClick: serviceInput.KeyClick(msg.A); break;
-                case InputMessageType.SimulateKeyHold: serviceInput.KeyHold(msg.A); break;
-                case InputMessageType.SimulateKeyRelease: serviceInput.KeyRelease(msg.A); break;
-                case InputMessageType.SimulateButtonClick: serviceInput.ButtonClick(msg.A); break;
-                case InputMessageType.SimulateButtonHold: serviceInput.ButtonHold(msg.A); break;
-                case InputMessageType.SimulateButtonRelease: serviceInput.ButtonRelease(msg.A); break;
-                case InputMessageType.SimulateMoveTo: serviceInput.MoveTo(msg.A, msg.B); break;
-                case InputMessageType.SimulateMoveBy: serviceInput.MoveBy(msg.A, msg.B); break;
-                case InputMessageType.SimulateCursorMoveBy: serviceInput.CursorMoveBy(msg.A, msg.B); break;
-                case InputMessageType.SimulateWrappedCursorMoveBy: serviceInput.WrappedCursorMoveBy(msg.A, msg.B); break;
-                case InputMessageType.SimulateMoveToScreenCenter: serviceInput.MoveToScreenCenter(); break;
-                case InputMessageType.SimulateScroll: serviceInput.Scroll(msg.A != 0); break;
-            }
+            DesktopInputBackend.Execute(msg, serviceInput);
         }
 
         private void TransferOutputToServiceLocked() {

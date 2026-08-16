@@ -57,7 +57,7 @@ namespace BetterJoyForCemu {
                 try {
                     while (pipe.IsConnected) {
                         InputMessage msg = InputMessage.ReadFrom(reader);
-                        Execute(msg, desktopInput);
+                        DesktopInputBackend.Execute(msg, desktopInput);
                     }
                 } catch {
                     // pipe closed/service gone - fall through and stop the message pump below
@@ -85,47 +85,6 @@ namespace BetterJoyForCemu {
                 } catch {
                     // best-effort - a mid-write disconnect just drops this one event
                 }
-            }
-        }
-
-        private static void Execute(InputMessage msg, DesktopInputBackend desktopInput) {
-            switch (msg.Type) {
-                case InputMessageType.SimulateKeyClick:
-                    desktopInput.KeyClick(msg.A);
-                    break;
-                case InputMessageType.SimulateKeyHold:
-                    desktopInput.KeyHold(msg.A);
-                    break;
-                case InputMessageType.SimulateKeyRelease:
-                    desktopInput.KeyRelease(msg.A);
-                    break;
-                case InputMessageType.SimulateButtonClick:
-                    desktopInput.ButtonClick(msg.A);
-                    break;
-                case InputMessageType.SimulateButtonHold:
-                    desktopInput.ButtonHold(msg.A);
-                    break;
-                case InputMessageType.SimulateButtonRelease:
-                    desktopInput.ButtonRelease(msg.A);
-                    break;
-                case InputMessageType.SimulateMoveTo:
-                    desktopInput.MoveTo(msg.A, msg.B);
-                    break;
-                case InputMessageType.SimulateMoveBy:
-                    desktopInput.MoveBy(msg.A, msg.B);
-                    break;
-                case InputMessageType.SimulateCursorMoveBy:
-                    desktopInput.CursorMoveBy(msg.A, msg.B);
-                    break;
-                case InputMessageType.SimulateWrappedCursorMoveBy:
-                    desktopInput.WrappedCursorMoveBy(msg.A, msg.B);
-                    break;
-                case InputMessageType.SimulateMoveToScreenCenter:
-                    desktopInput.MoveToScreenCenter();
-                    break;
-                case InputMessageType.SimulateScroll:
-                    desktopInput.Scroll(msg.A != 0);
-                    break;
             }
         }
     }

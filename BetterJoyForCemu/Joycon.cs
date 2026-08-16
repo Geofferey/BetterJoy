@@ -94,7 +94,9 @@ namespace BetterJoyForCemu {
             new string[GyroOnlyBindKeys.Length + 1];
         private readonly bool[] gyroOnlyReservedButtons = new bool[20];
         private readonly bool[] vigemButtons = new bool[20];
-        private string mappingProfileId;
+        // volatile: written by the other setter (join/split thread) and read by MappingValue
+        // (poll thread) - see PrepareForMappingProfileChange's comment on that race.
+        private volatile string mappingProfileId;
 
         private string MappingValue(string key) {
             if (mappingProfileId == null)
@@ -128,12 +130,20 @@ namespace BetterJoyForCemu {
             if (String.IsNullOrEmpty(mapping) || mapping == "0")
                 return;
 
-            foreach (string part in mapping.Split('+')) {
-                int code;
-                if (part.StartsWith("key_") && Int32.TryParse(part.Substring(4), out code))
-                    form.SimulateKeyRelease(code);
-                else if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
-                    form.SimulateButtonRelease(code);
+            // Simulate(mapping, click:false, up:true) already releases key_ parts
+            // unconditionally, and mse_ parts too whenever DragToggle is off. The one gap is
+            // mse_ under DragToggle: its hold branch only acts when !up (see Simulate's
+            // dragToggle block above), so a toggled-on mouse hold needs forcing below regardless
+            // of toggle state - mouse_toggle_btn itself doesn't need resetting here, the caller
+            // (PrepareForMappingProfileChange) clears it right after this returns.
+            Simulate(mapping, click: false, up: true);
+
+            if (dragToggle) {
+                foreach (string part in mapping.Split('+')) {
+                    int code;
+                    if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
+                        form.SimulateButtonRelease(code);
+                }
             }
         }
 
@@ -954,7 +964,11 @@ namespace BetterJoyForCemu {
         }
 
         bool dragToggle = Boolean.Parse(ConfigurationManager.AppSettings["DragToggle"]);
-        Dictionary<int, bool> mouse_toggle_btn = new Dictionary<int, bool>();
+        // ConcurrentDictionary, not plain Dictionary: PrepareForMappingProfileChange (join/split
+        // thread) calls Clear() on this while the poll thread concurrently reads/writes it via
+        // Simulate() - a plain Dictionary under that access pattern can throw or corrupt its
+        // bucket state.
+        ConcurrentDictionary<int, bool> mouse_toggle_btn = new ConcurrentDictionary<int, bool>();
 
         // s can be a "+"-joined combo (see Reassign's combo capture) - here that means "simulate
         // all of these together", e.g. a capture bind of "key_17+key_67" presses Ctrl+C. Any
@@ -1198,8 +1212,9 @@ namespace BetterJoyForCemu {
             // frame. If the manual recenter bind rises on that same report, perform the operation
             // only once.
             if (gyroMouseJustEnabled || manualRecenterRequested) {
-                if (ownsGyroMouse)
-                    form.SimulateMoveToScreenCenter();
+                // Both flags already imply ownsGyroMouse (gyroMouseJustEnabled directly,
+                // manualRecenterRequested via gyroMouseActionsEnabled), so no separate guard here.
+                form.SimulateMoveToScreenCenter();
 
                 RecenterGyro();
                 dt = 0.0f;
@@ -1766,14 +1781,8 @@ namespace BetterJoyForCemu {
                 gyroMouseBiasWindowMin = rawRate;
                 gyroMouseBiasWindowMax = rawRate;
             } else {
-                gyroMouseBiasWindowMin = new Vector3(
-                    Math.Min(gyroMouseBiasWindowMin.X, rawRate.X),
-                    Math.Min(gyroMouseBiasWindowMin.Y, rawRate.Y),
-                    Math.Min(gyroMouseBiasWindowMin.Z, rawRate.Z));
-                gyroMouseBiasWindowMax = new Vector3(
-                    Math.Max(gyroMouseBiasWindowMax.X, rawRate.X),
-                    Math.Max(gyroMouseBiasWindowMax.Y, rawRate.Y),
-                    Math.Max(gyroMouseBiasWindowMax.Z, rawRate.Z));
+                gyroMouseBiasWindowMin = Vector3.Min(gyroMouseBiasWindowMin, rawRate);
+                gyroMouseBiasWindowMax = Vector3.Max(gyroMouseBiasWindowMax, rawRate);
             }
 
             gyroMouseBiasWindowSum += rawRate;
@@ -1814,7 +1823,14 @@ namespace BetterJoyForCemu {
             ResetGyroMouseBiasWindow();
             AHRS.Recenter();
             cur_rotation = AHRS.GetEulerAngles();
-            lastDoThingsTimestamp = -1;
+
+            // Deliberately NOT resetting lastDoThingsTimestamp here: DoThingsWithButtons already
+            // refreshed it to nowTimestamp (a genuinely fresh, valid baseline) earlier in this
+            // same call, before this method ever runs, and separately forces this report's own
+            // dt to 0.0f right after calling this. Resetting it to -1 here would only poison the
+            // *next* report's dt into the "no prior packet" fallback instead of the real elapsed
+            // time - a one-report timing glitch that leaked into GyroAnalogSliders whenever it
+            // shares a controller with gyro-mouse.
         }
 
         // A solo Joycon and a joined Joycon transform the same physical IMU into different
@@ -1920,12 +1936,12 @@ namespace BetterJoyForCemu {
             }
 
             float speed = current.Length();
+            // The GyroMouseSmoothingThreshold <= 0.0f case already returned at the top of this
+            // method, so lowerThreshold (half of a strictly positive threshold) is always
+            // strictly less than GyroMouseSmoothingThreshold here - no divide-by-zero to guard.
             float lowerThreshold = GyroMouseSmoothingThreshold * 0.5f;
-            float unsmoothedFactor = GyroMouseSmoothingThreshold <= lowerThreshold
-                ? 1.0f
-                : Math.Max(0.0f, Math.Min(1.0f,
-                    (speed - lowerThreshold) /
-                    (GyroMouseSmoothingThreshold - lowerThreshold)));
+            float unsmoothedFactor = Math.Max(0.0f, Math.Min(1.0f,
+                (speed - lowerThreshold) / (GyroMouseSmoothingThreshold - lowerThreshold)));
 
             // Smoothstep avoids a perceptible gain corner as the filter releases. Once fully
             // released, follow the live rate so old slow-motion history cannot create a tail
@@ -2107,13 +2123,25 @@ namespace BetterJoyForCemu {
         // (see Reassign.cs), which IsComboHeld handles - this used to be a bare
         // Int32.Parse(val.Substring(4)) on the whole value, which crashed the poll thread with a
         // FormatException the moment val held a "+"-joined combo instead of one plain joy_N.
-        private readonly Dictionary<string, bool> gyroMouseComboHeld = new Dictionary<string, bool>();
+        // ConcurrentDictionary, not plain Dictionary: PrepareForMappingProfileChange (join/split
+        // thread, via ReleaseGyroMouseActions) reads/writes this while the poll thread
+        // concurrently does the same via SimulateGyroMouseButton/Scroll every report.
+        private readonly ConcurrentDictionary<string, bool> gyroMouseComboHeld =
+            new ConcurrentDictionary<string, bool>();
 
-        private void SimulateGyroMouseButton(string configKey, int buttonCode, bool enabled) {
+        // Shared rising/falling-edge bookkeeping for both gyro-mouse-only actions below - resolve
+        // configKey's current bind, evaluate whether it's held, and report whether it was held on
+        // the previous call so each caller only needs its own 2-line edge reaction.
+        private bool UpdateGyroMouseComboHeld(string configKey, bool enabled, out bool wasHeld) {
             string val = MappingValue(configKey);
             bool held = enabled && val != "0" && IsComboHeld(val);
-            bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
+            wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
             gyroMouseComboHeld[configKey] = held;
+            return held;
+        }
+
+        private void SimulateGyroMouseButton(string configKey, int buttonCode, bool enabled) {
+            bool held = UpdateGyroMouseComboHeld(configKey, enabled, out bool wasHeld);
 
             if (held && !wasHeld)
                 form.SimulateButtonHold(buttonCode);
@@ -2124,10 +2152,7 @@ namespace BetterJoyForCemu {
         // Scroll has no hold/release equivalent - just a discrete tick per press, matching a
         // physical scroll wheel's own click detents rather than a continuous rate while held.
         private void SimulateGyroMouseScroll(string configKey, bool up, bool enabled) {
-            string val = MappingValue(configKey);
-            bool held = enabled && val != "0" && IsComboHeld(val);
-            bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
-            gyroMouseComboHeld[configKey] = held;
+            bool held = UpdateGyroMouseComboHeld(configKey, enabled, out bool wasHeld);
 
             if (held && !wasHeld)
                 form.SimulateScroll(up);
