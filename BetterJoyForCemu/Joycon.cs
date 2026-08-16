@@ -72,6 +72,11 @@ namespace BetterJoyForCemu {
         // keep re-centering every packet for as long as the bind stays held.
         private bool prevResetMouseComboHeld = false;
 
+        // Updated once per controller report in DoThingsWithButtons, then consumed by all three
+        // IMU sub-samples from that report. Clenching suppresses pointer output without changing
+        // active_gyro, so clicks and the rest of the active gyro-mouse state remain intact.
+        private bool gyroMouseClenched = false;
+
         // A bind is one or more "joy_N"/"key_N"/"mse_N" parts joined with "+" (a single part is
         // just a combo of one) - true only when every part is currently held at once. Controller
         // parts check this Joycon's own buttons (and its pair partner's, if joined, matching how
@@ -996,6 +1001,10 @@ namespace BetterJoyForCemu {
             bool gyroMouseActionsEnabled = ownsGyroMouse && gyroEnabled;
             bool gyroMouseJustEnabled = ownsGyroMouse && !gyroWasEnabled && gyroEnabled;
 
+            string clenchGyroVal = ConfigurationManager.AppSettings["clench_gyro"] ?? "0";
+            gyroMouseClenched = gyroMouseActionsEnabled && clenchGyroVal != "0" &&
+                IsComboHeld(clenchGyroVal);
+
             // "Re-Centre Gyro" is a one-shot orientation operation, not merely a request to move
             // the Windows pointer. Apply it before sliders/stick/mouse consume this packet so the
             // pose held at the rising edge is neutral immediately. The legacy config key remains
@@ -1634,6 +1643,33 @@ namespace BetterJoyForCemu {
                 pendingMouseDx = pendingMouseDy = 0.0f;
                 filteredGyroMouseRate = Vector2.Zero;
                 filteredGyroMouseRateInitialized = false;
+                return;
+            }
+
+            if (gyroMouseClenched) {
+                // Raw roll-compensation integrates a complete orientation and reports deltas
+                // from its previous sample. Keep consuming samples while clenched but discard
+                // those deltas; freezing this estimator would turn all repositioning into one
+                // large catch-up jump on release. Player Space was already advanced by Update
+                // above, while the direct-rate path has no integration state to maintain.
+                if (!UseFilteredIMU &&
+                    Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseRollCompensation"])) {
+                    float ignoredYaw;
+                    float ignoredPitch;
+                    float ignoredRoll;
+                    gyroMouseOrientation.MapSample(
+                        mouseGyroRate.X, mouseGyroRate.Y, mouseGyroRate.Z, subSamplePeriod,
+                        out ignoredYaw, out ignoredPitch, out ignoredRoll);
+                }
+
+                // Drop fractional movement and filter history on every clenched sample. This
+                // makes the clamp immediate and prevents either pre-clench remainder or a
+                // smoothing tail from leaking out after release. Do not enable stationary-bias
+                // learning here: deliberate repositioning is motion, not a new sensor zero.
+                pendingMouseDx = pendingMouseDy = 0.0f;
+                filteredGyroMouseRate = Vector2.Zero;
+                filteredGyroMouseRateInitialized = false;
+                RecordGyroMouseDiagnosticSample(0, 0, 0.0f, 0.0f, 0.0f);
                 return;
             }
 

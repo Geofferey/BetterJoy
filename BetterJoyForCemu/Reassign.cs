@@ -40,7 +40,7 @@ namespace BetterJoyForCemu {
         private HashSet<string> comboHeldNow;
         private Timer comboTimeout;
 
-        // left_click/right_click/center_click/scroll_up/scroll_down live in App.config
+        // left_click/right_click/center_click/scroll_up/scroll_down/clench_gyro live in App.config
         // (ConfigurationManager.AppSettings), not Config.cs's own flat settings file like every
         // other button here - Config.cs's file uses a fixed line-count (settingsNum) that gets
         // destructively rewritten (deleting calibration data and every other keybind) if the
@@ -50,7 +50,8 @@ namespace BetterJoyForCemu {
         // store actually owns a given key, so the rest of this dialog's generic capture/save
         // logic doesn't need to care which one it's talking to.
         private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string> {
-            "left_click", "right_click", "center_click", "scroll_up", "scroll_down"
+            "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
+            "clench_gyro"
         };
 
         private static string GetBindValue(string key) {
@@ -103,7 +104,7 @@ namespace BetterJoyForCemu {
         }
 
         // Built in code, not the Designer, as a second column beside the existing one - avoids
-        // hand-computing five more rows' worth of Designer.cs pixel coordinates in a single
+        // hand-computing six more rows' worth of Designer.cs pixel coordinates in a single
         // column that would otherwise run the form well past its current height.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
 
@@ -117,6 +118,7 @@ namespace BetterJoyForCemu {
                 ("center_click", "Center Click"),
                 ("scroll_up", "Scroll Up"),
                 ("scroll_down", "Scroll Down"),
+                ("clench_gyro", "Clench Gyro"),
             };
 
             const int col2LabelX = 250;
