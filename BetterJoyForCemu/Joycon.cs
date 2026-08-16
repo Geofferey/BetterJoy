@@ -77,6 +77,21 @@ namespace BetterJoyForCemu {
         // active_gyro, so clicks and the rest of the active gyro-mouse state remain intact.
         private bool gyroMouseClenched = false;
 
+        // Gyro-only actions reserve their assigned physical controller buttons while gyro-mouse
+        // is active. Keep this mask separate from buttons[]: special actions and UDP still need
+        // the real input; only the virtual Xbox/DS4 report should consume it. The snapshot is
+        // reused to avoid adding per-report garbage collection to the latency-sensitive path.
+        private static readonly string[] GyroOnlyAppConfigBindKeys = {
+            "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
+            "clench_gyro"
+        };
+        // One extra slot holds reset_mouse, which lives in Config's legacy settings file rather
+        // than AppSettings but is now gyro-mouse-only under the same active gate.
+        private readonly string[] lastGyroOnlyBindValues =
+            new string[GyroOnlyAppConfigBindKeys.Length + 1];
+        private readonly bool[] gyroOnlyReservedButtons = new bool[20];
+        private readonly bool[] vigemButtons = new bool[20];
+
         // A bind is one or more "joy_N"/"key_N"/"mse_N" parts joined with "+" (a single part is
         // just a combo of one) - true only when every part is currently held at once. Controller
         // parts check this Joycon's own buttons (and its pair partner's, if joined, matching how
@@ -101,6 +116,110 @@ namespace BetterJoyForCemu {
                 }
             }
             return true;
+        }
+
+        // Rebuild only when a bind actually changes. AppSettings is live-refreshed by both the
+        // local Map Special Buttons dialog and the service config watcher, so this also picks up
+        // remote edits without reconnecting the controller.
+        private void RefreshGyroOnlyButtonReservations() {
+            bool changed = false;
+            for (int i = 0; i < GyroOnlyAppConfigBindKeys.Length; i++) {
+                string value = ConfigurationManager.AppSettings[GyroOnlyAppConfigBindKeys[i]] ?? "0";
+                if (lastGyroOnlyBindValues[i] != value) {
+                    lastGyroOnlyBindValues[i] = value;
+                    changed = true;
+                }
+            }
+
+            int resetMouseSlot = GyroOnlyAppConfigBindKeys.Length;
+            string resetMouseValue = Config.Value("reset_mouse");
+            if (String.IsNullOrEmpty(resetMouseValue))
+                resetMouseValue = "0";
+            if (lastGyroOnlyBindValues[resetMouseSlot] != resetMouseValue) {
+                lastGyroOnlyBindValues[resetMouseSlot] = resetMouseValue;
+                changed = true;
+            }
+
+            if (!changed)
+                return;
+
+            Array.Clear(gyroOnlyReservedButtons, 0, gyroOnlyReservedButtons.Length);
+            foreach (string value in lastGyroOnlyBindValues) {
+                if (value == "0")
+                    continue;
+
+                foreach (string part in value.Split('+')) {
+                    if (!part.StartsWith("joy_"))
+                        continue; // keyboard/mouse combo members never enter ViGEm
+
+                    int buttonIndex;
+                    if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                        buttonIndex >= 0 && buttonIndex < gyroOnlyReservedButtons.Length)
+                        gyroOnlyReservedButtons[buttonIndex] = true;
+                }
+            }
+        }
+
+        private bool OwnsGyroMouse() {
+            return extraGyroFeature == "mouse" &&
+                (isPro || other == null ||
+                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
+                    ? isLeft : !isLeft));
+        }
+
+        private bool IsGyroMouseActive() {
+            return OwnsGyroMouse() &&
+                (Config.Value("active_gyro") == "0" || active_gyro);
+        }
+
+        // A joined pair's ViGEm target stays on whichever half connected first, while gyro-mouse
+        // ownership is selected independently by handedness. Query both halves so consumption
+        // follows the actual gyro owner instead of whichever object happens to emit the report.
+        private bool PairHasActiveGyroMouse() {
+            return IsGyroMouseActive() ||
+                (other != null && other != this && other.IsGyroMouseActive());
+        }
+
+        // Bind capture deliberately uses the left Joycon as a joined pair's canonical Pro-style
+        // view. If the ViGEm target survived on the right Joycon, that object's local button array
+        // stores the same physical controls under the opposite-half indices. Translate the
+        // canonical reserved index before filtering so join order cannot make us consume the
+        // wrong physical control.
+        private int CanonicalButtonToLocalVigemIndex(int canonicalIndex) {
+            if (isPro || other == null || other == this || isLeft)
+                return canonicalIndex;
+
+            switch ((Button)canonicalIndex) {
+                case Button.DPAD_DOWN: return (int)Button.B;
+                case Button.DPAD_RIGHT: return (int)Button.A;
+                case Button.DPAD_LEFT: return (int)Button.Y;
+                case Button.DPAD_UP: return (int)Button.X;
+                case Button.B: return (int)Button.DPAD_DOWN;
+                case Button.A: return (int)Button.DPAD_RIGHT;
+                case Button.Y: return (int)Button.DPAD_LEFT;
+                case Button.X: return (int)Button.DPAD_UP;
+                case Button.STICK: return (int)Button.STICK2;
+                case Button.STICK2: return (int)Button.STICK;
+                case Button.SHOULDER_1: return (int)Button.SHOULDER2_1;
+                case Button.SHOULDER2_1: return (int)Button.SHOULDER_1;
+                case Button.SHOULDER_2: return (int)Button.SHOULDER2_2;
+                case Button.SHOULDER2_2: return (int)Button.SHOULDER_2;
+                default: return canonicalIndex;
+            }
+        }
+
+        private bool[] GetButtonsForVigem() {
+            if (!PairHasActiveGyroMouse())
+                return buttons;
+
+            Array.Copy(buttons, vigemButtons, buttons.Length);
+            for (int canonicalIndex = 0;
+                 canonicalIndex < gyroOnlyReservedButtons.Length;
+                 canonicalIndex++) {
+                if (gyroOnlyReservedButtons[canonicalIndex])
+                    vigemButtons[CanonicalButtonToLocalVigemIndex(canonicalIndex)] = false;
+            }
+            return vigemButtons;
         }
 
         private long inactivity = Stopwatch.GetTimestamp();
@@ -389,6 +508,10 @@ namespace BetterJoyForCemu {
             this.thirdParty = thirdParty;
 
             this.path = path;
+
+            // Seed the ViGEm-consumption mask before the first input report. Subsequent live
+            // configuration changes are picked up once per report in DoThingsWithButtons.
+            RefreshGyroOnlyButtonReservations();
 
             connection = isUSB ? 0x01 : 0x02;
 
@@ -994,10 +1117,9 @@ namespace BetterJoyForCemu {
             }
             bool gyroEnabled = activeGyroCombo == "0" || active_gyro;
 
-            bool ownsGyroMouse = extraGyroFeature == "mouse" &&
-                (isPro || other == null ||
-                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
-                    ? isLeft : !isLeft));
+            RefreshGyroOnlyButtonReservations();
+
+            bool ownsGyroMouse = OwnsGyroMouse();
             bool gyroMouseActionsEnabled = ownsGyroMouse && gyroEnabled;
             bool gyroMouseJustEnabled = ownsGyroMouse && !gyroWasEnabled && gyroEnabled;
 
@@ -1596,11 +1718,7 @@ namespace BetterJoyForCemu {
         private void ProcessGyroMouseSample(bool flushToMouse) {
             EnsureGyroOrientationBasis();
 
-            if (extraGyroFeature != "mouse") {
-                ResetGyroMouseMotionState(true);
-                return;
-            }
-            if (!(isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
+            if (!OwnsGyroMouse()) {
                 ResetGyroMouseMotionState(true);
                 return;
             }
@@ -2399,7 +2517,7 @@ namespace BetterJoyForCemu {
             var other = input.other;
             var GyroAnalogSliders = input.GyroAnalogSliders;
 
-            var buttons = input.buttons;
+            var buttons = input.GetButtonsForVigem();
             var stick = input.stick;
             var stick2 = input.stick2;
             var sliderVal = input.sliderVal;
@@ -2534,7 +2652,7 @@ namespace BetterJoyForCemu {
             var other = input.other;
             var GyroAnalogSliders = input.GyroAnalogSliders;
 
-            var buttons = input.buttons;
+            var buttons = input.GetButtonsForVigem();
             var stick = input.stick;
             var stick2 = input.stick2;
             var sliderVal = input.sliderVal;
