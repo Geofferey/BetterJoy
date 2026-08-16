@@ -1233,8 +1233,9 @@ namespace BetterJoyForCemu {
 
         // Canonical JoyShockLibrary/GamepadMotionHelpers Y-up sensor frame used only by gyro
         // mouse. BetterJoy's public gyr_g/acc_g frame is retained untouched for UDP, gyro-stick,
-        // analog sliders and compatibility. A solo Joy-Con gets an additional proper sideways
-        // rotation, applied identically to these two vectors before fusion.
+        // analog sliders and compatibility. This frame deliberately does not change when a
+        // Joy-Con is joined or split: gyro-mouse orientation follows the physical sensor, while
+        // the legacy solo transform below exists for controller-layout compatibility.
         private Vector3 gyroMouseSensorRate;
         private Vector3 gyroMouseSensorAccel;
 
@@ -1595,30 +1596,12 @@ namespace BetterJoyForCemu {
         private void UpdateCanonicalGyroMouseImu() {
             // BetterJoy parses Nintendo packet axes as X=raw Z, Y=raw X, Z=raw Y and applies
             // controller-side signs. This proper rotation converts that established frame to the
-            // same Y-up convention JoyShockLibrary feeds into GamepadMotionHelpers.
+            // same Y-up convention JoyShockLibrary feeds into GamepadMotionHelpers. Do not apply
+            // BetterJoy's solo sideways-layout transform here: doing so rotates a solo Joy-Con's
+            // physical pitch axis into Player Space's yaw/roll plane, suppressing vertical and
+            // diagonal pointer motion. Joined, self-paired and solo use the same sensor frame.
             gyroMouseSensorAccel = new Vector3(-acc_g.Y, acc_g.Z, -acc_g.X);
             gyroMouseSensorRate = new Vector3(gyr_g.Y, -gyr_g.Z, -gyr_g.X);
-
-            if (other == null && !isPro) {
-                float oldAccelX = gyroMouseSensorAccel.X;
-                float oldAccelZ = gyroMouseSensorAccel.Z;
-                float oldGyroX = gyroMouseSensorRate.X;
-                float oldGyroZ = gyroMouseSensorRate.Z;
-
-                if (isLeft) {
-                    // +90 degrees around canonical up: (x,y,z) -> (z,y,-x).
-                    gyroMouseSensorAccel.X = oldAccelZ;
-                    gyroMouseSensorAccel.Z = -oldAccelX;
-                    gyroMouseSensorRate.X = oldGyroZ;
-                    gyroMouseSensorRate.Z = -oldGyroX;
-                } else {
-                    // -90 degrees around canonical up: (x,y,z) -> (-z,y,x).
-                    gyroMouseSensorAccel.X = -oldAccelZ;
-                    gyroMouseSensorAccel.Z = oldAccelX;
-                    gyroMouseSensorRate.X = -oldGyroZ;
-                    gyroMouseSensorRate.Z = oldGyroX;
-                }
-            }
         }
 
         private Vector3 TransformGyroMouseToNeutralFrame(Vector3 value) {
