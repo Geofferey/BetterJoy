@@ -885,6 +885,7 @@ namespace BetterJoyForCemu {
             // then), so there's no real conflict with its normal mapped behavior the rest of the
             // time.
             if (CalibrationState.PendingConfirmController == this && CalibrationConfirmPressed()) {
+                ReleaseGyroMouseActions();
                 form.HandleCalibrationConfirm(this);
                 return;
             }
@@ -897,6 +898,7 @@ namespace BetterJoyForCemu {
                     if (other != null)
                         other.PowerOff();
 
+                    ReleaseGyroMouseActions();
                     PowerOff();
                     return;
                 }
@@ -904,6 +906,7 @@ namespace BetterJoyForCemu {
 
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && !isPro) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
+                    ReleaseGyroMouseActions();
                     form.JoinOrSplitJoycon(this); // trigger connection button click
 
                     lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
@@ -919,6 +922,7 @@ namespace BetterJoyForCemu {
                     if (other != null)
                         other.PowerOff();
 
+                    ReleaseGyroMouseActions();
                     PowerOff();
                     return;
                 }
@@ -1049,23 +1053,27 @@ namespace BetterJoyForCemu {
                     control_stick[0] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[0] / GyroStickReduction + dx));
                     control_stick[1] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[1] / GyroStickReduction + dy));
                 }
-            } else if (extraGyroFeature == "mouse" && (isPro || (other == null) || (other != null && (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"]) ? isLeft : !isLeft)))) {
-                // gyro data is in degrees/s
-                if (Config.Value("active_gyro") == "0" || active_gyro) {
-                    // Mouse movement itself is applied per IMU sub-sample in
-                    // ProcessGyroMouseSample. Both modes derive displacement only from angular
-                    // velocity. Filtered mode additionally uses a fused gravity reference to
-                    // blend yaw/roll in Player Space as the controller is tilted; acceleration
-                    // itself never becomes cursor displacement.
-
-                    SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left);
-                    SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right);
-                    SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle);
-                    SimulateGyroMouseScroll("scroll_up", true);
-                    SimulateGyroMouseScroll("scroll_down", false);
-                }
-
             }
+
+            bool ownsGyroMouse = extraGyroFeature == "mouse" &&
+                (isPro || other == null ||
+                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
+                    ? isLeft : !isLeft));
+            bool gyroMouseActionsEnabled = ownsGyroMouse &&
+                (activeGyroCombo == "0" || active_gyro);
+
+            // Movement itself is applied per IMU sub-sample in ProcessGyroMouseSample. Reconcile
+            // button state on every controller report, including reports where gyro-mouse is
+            // inactive or this half no longer owns it. Otherwise leaving either condition while
+            // a synthetic button is down skips the only path that could send its matching up.
+            SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
+                                    gyroMouseActionsEnabled);
+            SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
+                                    gyroMouseActionsEnabled);
+            SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
+                                    gyroMouseActionsEnabled);
+            SimulateGyroMouseScroll("scroll_up", true, gyroMouseActionsEnabled);
+            SimulateGyroMouseScroll("scroll_down", false, gyroMouseActionsEnabled);
         }
 
         // Gyro-mouse movement is calculated once per IMU sub-sample from ReceiveRaw rather than
@@ -1701,12 +1709,9 @@ namespace BetterJoyForCemu {
         // FormatException the moment val held a "+"-joined combo instead of one plain joy_N.
         private readonly Dictionary<string, bool> gyroMouseComboHeld = new Dictionary<string, bool>();
 
-        private void SimulateGyroMouseButton(string configKey, int buttonCode) {
+        private void SimulateGyroMouseButton(string configKey, int buttonCode, bool enabled) {
             string val = ConfigurationManager.AppSettings[configKey] ?? "0";
-            if (val == "0")
-                return;
-
-            bool held = IsComboHeld(val);
+            bool held = enabled && val != "0" && IsComboHeld(val);
             bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
             gyroMouseComboHeld[configKey] = held;
 
@@ -1718,17 +1723,25 @@ namespace BetterJoyForCemu {
 
         // Scroll has no hold/release equivalent - just a discrete tick per press, matching a
         // physical scroll wheel's own click detents rather than a continuous rate while held.
-        private void SimulateGyroMouseScroll(string configKey, bool up) {
+        private void SimulateGyroMouseScroll(string configKey, bool up, bool enabled) {
             string val = ConfigurationManager.AppSettings[configKey] ?? "0";
-            if (val == "0")
-                return;
-
-            bool held = IsComboHeld(val);
+            bool held = enabled && val != "0" && IsComboHeld(val);
             bool wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
             gyroMouseComboHeld[configKey] = held;
 
             if (held && !wasHeld)
                 form.SimulateScroll(up);
+        }
+
+        private void ReleaseGyroMouseActions() {
+            SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
+                                    false);
+            SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
+                                    false);
+            SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
+                                    false);
+            SimulateGyroMouseScroll("scroll_up", true, false);
+            SimulateGyroMouseScroll("scroll_down", false, false);
         }
 
         // Guards RetireDuplicateConnections() above so it only ever runs once per controller,
@@ -1791,6 +1804,11 @@ namespace BetterJoyForCemu {
                     // No need to increase attempts because it's not an error.
                 }
             }
+
+            // A disconnect or detach may prevent another input report from arriving. Release
+            // stateful desktop inputs here as the final backstop instead of leaving Windows with
+            // a button-down whose corresponding physical controller can no longer report up.
+            ReleaseGyroMouseActions();
         }
 
         public float[] otherStick = { 0, 0 };
