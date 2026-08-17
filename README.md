@@ -2,7 +2,7 @@
   <img src="title.png">
 </p>
 
-# BetterJoy v7.2.1
+# BetterJoy2 v7.2.1
 Allows the Nintendo Switch Pro Controller, Joycons, and Switch SNES controller to be used with [Cemu](http://cemu.info/) using [Cemuhook](https://sshnuke.net/cemuhook/), [Citra](https://citra-emu.org/), [Dolphin](https://dolphin-emu.org/), [Yuzu](https://yuzu-emu.org/), and system-wide with generic XInput support.
 
 It also allows using the gyro to control your mouse and remap the special buttons (SL, SR, Capture) to key bindings of your choice.
@@ -25,7 +25,7 @@ Go to the [Releases tab](https://github.com/Geofferey/BetterJoy/releases/)!
     1. Read the READMEs (they're there for a reason!)
     1. Run *Drivers/ViGEmBus_1.22.0_x64_x86_arm64.exe*
     1. Restart your computer
-    1. Optional: if other programs (e.g. Steam) fight BetterJoy over your controller, run *Drivers/HidHide_1.5.230_x64.exe* and enable "UseHidHide" in the settings panel - this hides the controller from every other program entirely.
+    1. Optional: if other programs (e.g. Steam) fight BetterJoy2 over your controller, run *Drivers/HidHide_1.5.230_x64.exe* and enable "UseHidHide" in the settings panel, this hides the controller from every other program entirely.
 2. Run *BetterJoyForCemu.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work
 3. Connect your controllers.
@@ -38,7 +38,7 @@ Go to the [Releases tab](https://github.com/Geofferey/BetterJoy/releases/)!
 * As of version 3, you can use the pro controller and Joycons as normal xbox controllers on your PC - try it with Steam!
 
 # More Info
-Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll find all sorts of goodness such as the changelog, description of app settings, and the FAQ and Problems page. If Steam (or another program) fights BetterJoy over your controller, see the optional HidHide driver mentioned above - it hides the controller from everything except BetterJoy.
+Check out the [wiki](https://github.com/Geofferey/BetterJoy2/wiki)! There, you'll find all sorts of goodness such as the changelog, description of app settings, and the FAQ and Problems page. If Steam (or another program) fights BetterJoy over your controller, see the optional HidHide driver mentioned above - it hides the controller from everything except BetterJoy.
 
 # Connecting and Disconnecting the Controller
 ## Bluetooth Mode
@@ -63,7 +63,7 @@ Check out the [wiki](https://github.com/Davidobot/BetterJoy/wiki)! There, you'll
 2. Get the code via Git or the *Download ZIP* button.
 3. Run **`build.bat`** in the repo root. It locates MSBuild, restores NuGet packages, and builds Release|x64.
 4. If [Inno Setup](https://jrsoftware.org/isdl.php) is also installed, it additionally packages the build into
-   an installer at *Installer\Output\BetterJoy-Setup-VERSION.exe*. If not, this step is skipped and you still
+   an installer at *Installer\Output\BetterJoy-Setup-vVERSION.exe*. If not, this step is skipped and you still
    get a working build.
 
 ## Visual Studio (IDE)
@@ -114,7 +114,7 @@ A technically sophisticated implementation is still wrong if a controller reconn
 
 AI has dramatically expanded what I can build, but it has not eliminated the need for expertise or judgment. If anything, faster implementation makes judgment more important: **bad ideas can become working code just as quickly as good ones.** Code can compile, look convincing, and survive a quick test while still being fundamentally wrong once it meets real hardware and real-world edge cases. I still have to know what to ask for, what to test, which assumptions to challenge, what to throw away, and when something that looks correct in the source clearly is not.
 
-So yeah, call it AI-assisted, vibe coded, AI-written, or whatever the fuck you want. I'm not going to hide the toolchain or claim expertise I do not have. AI helps produce and analyze implementations at a speed I could never achieve manually. The vision, requirements, hardware validation, interpretation, judgment, and decision to ship remain mine.
+So yeah, call it AI-assisted, vibe coded, AI-written, or whatever you want. I'm not going to hide the toolchain or claim expertise I do not have. AI helps produce and analyze implementations at a speed I could never achieve manually. The vision, requirements, hardware validation, interpretation, judgment, and decision to ship remain mine.
 
 Judge the project by what it actually does, how reliably it does it, whether the work of others is properly credited, whether its problems are documented honestly, and whether the software keeps getting better.
 
@@ -122,7 +122,7 @@ Judge the project by what it actually does, how reliably it does it, whether the
 
 ## Implementation lineage and adapted work
 
-BetterJoy is built on a long chain of open-source controller work. The following projects
+BetterJoy2 is built on a long chain of open-source controller work. The following projects
 contributed code, algorithms, protocol knowledge, or concrete implementation patterns used by
 this repository:
 
