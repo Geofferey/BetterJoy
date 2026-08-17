@@ -8,7 +8,7 @@ using System.Text;
 using System.Xml.Linq;
 
 namespace BetterJoyForCemu {
-    // One logical controller shown in Map Special Buttons. A joined L+R pair is one profile;
+    // One logical controller shown in Controller Profiles. A joined L+R pair is one profile;
     // the same two Joy-Cons when split are two different profiles. ConnectionSequence is the
     // newest physical member's creation order and lets the dialog select the most recently
     // connected logical controller without relying on PadId (which is only a transient slot).
@@ -16,6 +16,7 @@ namespace BetterJoyForCemu {
         public string ProfileId { get; set; }
         public string DisplayName { get; set; }
         public long ConnectionSequence { get; set; }
+        public bool IsConnected { get; set; }
 
         public override string ToString() {
             return DisplayName;
@@ -193,6 +194,7 @@ namespace BetterJoyForCemu {
                     ProfileId = ProfileIdFor(joycon),
                     DisplayName = "Joy-Con Pair (L " + DeviceSuffix(left) + " / R " + DeviceSuffix(right) + ")",
                     ConnectionSequence = Math.Max(left.virtualControllerSequence, right.virtualControllerSequence),
+                    IsConnected = true,
                 };
             }
 
@@ -212,6 +214,7 @@ namespace BetterJoyForCemu {
                 ProfileId = ProfileIdFor(joycon),
                 DisplayName = type + " (" + DeviceSuffix(joycon) + ")",
                 ConnectionSequence = joycon.virtualControllerSequence,
+                IsConnected = true,
             };
         }
 
@@ -230,6 +233,42 @@ namespace BetterJoyForCemu {
             }
 
             return result.Values.OrderByDescending(p => p.ConnectionSequence).ToList();
+        }
+
+        // Profiles are durable configuration, not merely a view of attached hardware. Merge the
+        // saved IDs from controller_mappings.xml with the live controller list so the editor can
+        // reopen and modify a controller's bindings while that controller is powered off. A live
+        // entry replaces its saved-only rendering and retains connection ordering; disconnected
+        // entries are sorted by their stable, derived display name after all connected entries.
+        public static List<ControllerProfileInfo> IncludeDisconnectedProfiles(
+            IEnumerable<ControllerProfileInfo> connectedProfiles) {
+            EnsureLoaded();
+
+            var merged = new Dictionary<string, ControllerProfileInfo>(StringComparer.Ordinal);
+            Dictionary<string, Dictionary<string, string>> snapshot = profiles;
+            foreach (string profileId in snapshot.Keys) {
+                merged[profileId] = new ControllerProfileInfo {
+                    ProfileId = profileId,
+                    DisplayName = DisconnectedDisplayName(profileId),
+                    ConnectionSequence = -1,
+                    IsConnected = false,
+                };
+            }
+
+            if (connectedProfiles != null) {
+                foreach (ControllerProfileInfo connected in connectedProfiles) {
+                    if (connected != null && !String.IsNullOrEmpty(connected.ProfileId)) {
+                        connected.IsConnected = true;
+                        merged[connected.ProfileId] = connected;
+                    }
+                }
+            }
+
+            return merged.Values
+                .OrderByDescending(p => p.IsConnected)
+                .ThenByDescending(p => p.ConnectionSequence)
+                .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private static void EnsureLoaded() {
@@ -284,6 +323,71 @@ namespace BetterJoyForCemu {
             if (serial.Length > 0 && serial != "000000000001")
                 return serial.Substring(Math.Max(0, serial.Length - 6));
             return "Pad " + (joycon.PadId + 1);
+        }
+
+        private static string DisconnectedDisplayName(string profileId) {
+            int separator = profileId == null ? -1 : profileId.IndexOf(':');
+            if (separator <= 0 || separator == profileId.Length - 1)
+                return (profileId ?? "Controller profile") + " (disconnected)";
+
+            string kind = profileId.Substring(0, separator);
+            string identity = profileId.Substring(separator + 1);
+            string name;
+            switch (kind) {
+                case "pair":
+                    string[] pair = identity.Split('+');
+                    name = pair.Length == 2
+                        ? "Joy-Con Pair (L " + IdentitySuffix(pair[0]) + " / R " + IdentitySuffix(pair[1]) + ")"
+                        : "Joy-Con Pair (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "pro":
+                    name = "Pro Controller (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "snes":
+                    name = "SNES Controller (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "n64":
+                    name = "N64 Controller (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "solo-left":
+                    name = "Left Joy-Con (solo) (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "solo-right":
+                    name = "Right Joy-Con (solo) (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "vertical-left":
+                    name = "Left Joy-Con (vertical) (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "vertical-right":
+                    name = "Right Joy-Con (vertical) (" + IdentitySuffix(identity) + ")";
+                    break;
+                default:
+                    name = "Controller profile (" + IdentitySuffix(identity) + ")";
+                    break;
+            }
+
+            return name + " (disconnected)";
+        }
+
+        private static string IdentitySuffix(string identity) {
+            if (String.IsNullOrEmpty(identity))
+                return "unknown";
+
+            string value = identity;
+            if (identity.StartsWith("serial-", StringComparison.Ordinal)) {
+                string encoded = identity.Substring("serial-".Length)
+                    .Replace('-', '+').Replace('_', '/');
+                while (encoded.Length % 4 != 0)
+                    encoded += "=";
+                try {
+                    value = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+                } catch {
+                    value = identity;
+                }
+            }
+
+            string suffix = value.Substring(Math.Max(0, value.Length - 6));
+            return suffix.ToUpperInvariant();
         }
 
         private static string AddressString(PhysicalAddress address) {

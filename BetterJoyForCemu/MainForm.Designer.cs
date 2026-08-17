@@ -47,6 +47,7 @@ namespace BetterJoyForCemu {
             this.settingsApply = new System.Windows.Forms.Button();
             this.btn_enableServiceMode = new System.Windows.Forms.Button();
             this.btn_settings = new System.Windows.Forms.Button();
+            this.btn_controllerProfiles = new System.Windows.Forms.Button();
             this.contextMenu.SuspendLayout();
             this.conCntrls.SuspendLayout();
             this.groupBox1.SuspendLayout();
@@ -286,6 +287,21 @@ namespace BetterJoyForCemu {
             this.btn_settings.UseVisualStyleBackColor = true;
             this.btnTip.SetToolTip(this.btn_settings, "Settings");
             this.btn_settings.Click += new System.EventHandler(this.btn_settings_Click);
+            //
+            // btn_controllerProfiles
+            //
+            this.btn_controllerProfiles.BackgroundImage = global::BetterJoyForCemu.Properties.Resources.betterjoyforcemu_icon.ToBitmap();
+            this.btn_controllerProfiles.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Zoom;
+            this.btn_controllerProfiles.FlatAppearance.BorderSize = 0;
+            this.btn_controllerProfiles.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.btn_controllerProfiles.Location = new System.Drawing.Point(237, 221);
+            this.btn_controllerProfiles.Margin = new System.Windows.Forms.Padding(3);
+            this.btn_controllerProfiles.Name = "btn_controllerProfiles";
+            this.btn_controllerProfiles.Size = new System.Drawing.Size(19, 19);
+            this.btn_controllerProfiles.TabIndex = 15;
+            this.btn_controllerProfiles.UseVisualStyleBackColor = true;
+            this.btnTip.SetToolTip(this.btn_controllerProfiles, "Controller Profiles");
+            this.btn_controllerProfiles.Click += new System.EventHandler(this.btn_reassign_open_Click);
             // 
             // MainForm
             // 
@@ -294,6 +310,7 @@ namespace BetterJoyForCemu {
             this.AutoSize = true;
             this.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this.ClientSize = new System.Drawing.Size(633, 284);
+            this.Controls.Add(this.btn_controllerProfiles);
             this.Controls.Add(this.btn_settings);
             this.Controls.Add(this.rightPanel);
             this.Controls.Add(this.conCntrls);
@@ -341,5 +358,6 @@ namespace BetterJoyForCemu {
         private System.Windows.Forms.Button settingsApply;
         private System.Windows.Forms.Button btn_enableServiceMode;
         private System.Windows.Forms.Button btn_settings;
+        private System.Windows.Forms.Button btn_controllerProfiles;
     }
 }

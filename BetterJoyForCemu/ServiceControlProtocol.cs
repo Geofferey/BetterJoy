@@ -23,7 +23,7 @@ namespace BetterJoyForCemu {
         JoinOrSplit = 12,
         StartCalibration = 13,
         CalibrationReady = 14, // user clicked "OK" on the current step - see CalibrationStep
-        StartButtonCapture = 15, // Map Special Buttons dialog opened - start pushing ButtonTransition
+        StartButtonCapture = 15, // Controller Profiles dialog opened - start pushing ButtonTransition
         StopButtonCapture = 16, // dialog closed - stop
     }
 
@@ -94,7 +94,7 @@ namespace BetterJoyForCemu {
 
     // A connected controller's button just went down or up - pushed only while a GUI has
     // requested it (StartButtonCapture), so it costs nothing the rest of the time. ProfileId is
-    // the logical controller that produced it, allowing Map Special Buttons to ignore presses
+    // the logical controller that produced it, allowing Controller Profiles to ignore presses
     // from a different physical controller while editing the selected profile.
     public struct ButtonTransitionInfo {
         public string ProfileId;

@@ -167,7 +167,7 @@ namespace BetterJoyForCemu {
 
                 // Config.Init() normally runs inside Program.Start() (see its comment there for
                 // why) - remote mode never calls that, so without this, Config.variables stays
-                // completely empty and every Config.Value(...) lookup returns "". Map Buttons
+                // completely empty and every Config.Value(...) lookup returns "". Controller Profiles
                 // (Reassign.GetPrettyName) doesn't guard against that, so it crashed with
                 // ArgumentOutOfRangeException the moment anyone opened it in remote mode.
                 Config.Init(CalibrationState.CaliData, CalibrationState.StickCaliData, CalibrationState.Stick2CaliData);
@@ -203,7 +203,8 @@ namespace BetterJoyForCemu {
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
             if (!console.Visible) {
                 // Close up the gap console leaves behind by pulling the settings gear/version
-                // label up into its row instead of leaving them down where console used to end.
+                // label and profile button up into its row instead of leaving them down where
+                // console used to end.
                 // console.Top itself is the stable anchor here - it doesn't change when Visible
                 // is toggled off. The form is AutoSize/GrowAndShrink, so it naturally shrinks to
                 // fit afterward - and grows back to fit rightPanel when settings gets toggled
@@ -211,6 +212,13 @@ namespace BetterJoyForCemu {
                 btn_settings.Top = console.Top;
                 version_lbl.Top = console.Top;
             }
+
+            // Keep the two utility icons as one unit after the HideStatus layout adjustment (and
+            // after WinForms DPI scaling). The Designer coordinates alone leave Profiles behind
+            // at the old bottom row when the status console is hidden.
+            btn_controllerProfiles.Location = new Point(
+                btn_settings.Left - btn_controllerProfiles.Width - 6,
+                btn_settings.Top);
 
             if (Boolean.Parse(ConfigurationManager.AppSettings["StartInTray"])) {
                 HideToTray();
@@ -552,7 +560,7 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Left click on any controller (Pro or Joycon) opens Map Buttons; right click on a
+        // Left click on any controller (Pro or Joycon) opens Controller Profiles; right click on a
         // Joycon joins/splits it instead (also triggered by double-clicking the stick in
         // hardware, via JoinOrSplitJoycon directly - see Joycon.cs). Left click on an empty
         // slot (Tag == null) opens Add Controllers instead.
@@ -594,9 +602,9 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Left-click disambiguation between "map buttons" (single click) and "calibrate"
+        // Left-click disambiguation between "controller profiles" (single click) and "calibrate"
         // (double click), only relevant when AllowCalibration is on - otherwise every left
-        // click opens Map Buttons immediately, same as before this existed. A single click is
+        // click opens Controller Profiles immediately, same as before this existed. A single click is
         // held for clickTimer's interval to see if a second one follows on the same button
         // before committing to it - a plain WinForms DoubleClick event isn't usable here since
         // it fires in addition to, not instead of, the Click for the first press. While waiting,
@@ -657,7 +665,7 @@ namespace BetterJoyForCemu {
         }
 
         public void SetConnectionTooltip(Button button, bool isPro) {
-            string tip = isPro ? "Left-click to map buttons" : "Right-click to split / left-click to map buttons";
+            string tip = isPro ? "Left-click to edit controller profile" : "Right-click to split / left-click to edit controller profile";
             if (allowCalibration)
                 tip += ", double click to calibrate";
             btnTip.SetToolTip(button, tip);

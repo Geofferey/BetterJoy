@@ -316,7 +316,7 @@ namespace BetterJoyForCemu {
             this.MaximizeBox = false;
             this.MinimizeBox = false;
             this.Name = "Reassign";
-            this.Text = "Map Special Buttons";
+            this.Text = "Controller Profiles";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Reassign_FormClosing);
             this.Load += new System.EventHandler(this.Reassign_Load);
             this.ResumeLayout(false);

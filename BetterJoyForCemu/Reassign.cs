@@ -133,7 +133,7 @@ namespace BetterJoyForCemu {
             var label = new Label {
                 AutoSize = true,
                 Location = new Point(15, 16),
-                Text = "Controller",
+                Text = "Profile",
             };
             controllerSelector = new ComboBox {
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -217,6 +217,7 @@ namespace BetterJoyForCemu {
                                 ? "Controller " + (record.PadId + 1)
                                 : record.ProfileName,
                             ConnectionSequence = record.ConnectionSequence,
+                            IsConnected = true,
                         };
                     }
                 }
@@ -237,9 +238,11 @@ namespace BetterJoyForCemu {
         }
 
         private void RefreshControllerChoices() {
-            List<ControllerProfileInfo> choices = serviceClient != null
+            List<ControllerProfileInfo> connectedChoices = serviceClient != null
                 ? remoteProfiles.OrderByDescending(p => p.ConnectionSequence).ToList()
                 : ControllerMappings.ConnectedProfiles(Program.mgr?.j);
+            List<ControllerProfileInfo> choices =
+                ControllerMappings.IncludeDisconnectedProfiles(connectedChoices);
 
             string selectedId = SelectedProfileId;
             long newest = choices.Count == 0 ? -1 : choices.Max(p => p.ConnectionSequence);
