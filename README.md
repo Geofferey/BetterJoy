@@ -102,6 +102,22 @@ The built binaries are located under
 
 where `PLATFORM` and `CONFIGURATION` are the one provided at build time. 
 
+# AI, Authorship, and My Role
+
+There is A LOT of love and hate around AI right now, with legitimate concerns about code quality, livelihoods, authorship, identity, and what any of this means for skilled work. Until recently, I was reluctant to use AI for even mundane tasks, let alone something this complex. I also deal with plenty of imposter syndrome, or maybe just an uncomfortable awareness of exactly where my own knowledge ends.
+
+I'm not going to pretend that AI helping me write code suddenly makes me a computer scientist or gives me decades of low-level Windows input experience. It doesn't. There are developers who understand and can write this code at a level I cannot, and I respect the hell out of that. What AI has done is remove a massive implementation barrier between understanding a problem, having a vision for how it should behave, and being able to test that vision in working software.
+
+My role in this project is closer to a technical director than a traditional programmer. I define how the system should behave, identify the problems and edge cases that matter, direct the implementation, test it against real hardware, analyze failures, and decide whether the result is actually good enough to ship. I may not understand every subsystem from first principles, but I have a very specific vision for the system's surface behavior. That is not superficial. It is the reason the underlying engineering exists.
+
+A technically sophisticated implementation is still wrong if a controller reconnects under the wrong player number, a Joy-Con cannot transition cleanly between solo and paired operation, the GUI fights with an already-running service, or the gyro mathematically works but feels like shit in your hands. The implementation has to serve the behavior.
+
+AI has dramatically expanded what I can build, but it has not eliminated the need for expertise or judgment. If anything, faster implementation makes judgment more important: **bad ideas can become working code just as quickly as good ones.** Code can compile, look convincing, and survive a quick test while still being fundamentally wrong once it meets real hardware and real-world edge cases. I still have to know what to ask for, what to test, which assumptions to challenge, what to throw away, and when something that looks correct in the source clearly is not.
+
+So yeah, call it AI-assisted, vibe coded, AI-written, or whatever the fuck you want. I'm not going to hide the toolchain or claim expertise I do not have. AI helps produce and analyze implementations at a speed I could never achieve manually. The vision, requirements, hardware validation, interpretation, judgment, and decision to ship remain mine.
+
+Judge the project by what it actually does, how reliably it does it, whether the work of others is properly credited, whether its problems are documented honestly, and whether the software keeps getting better.
+
 # Acknowledgements
 
 ## Implementation lineage and adapted work
