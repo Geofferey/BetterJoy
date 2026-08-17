@@ -103,6 +103,66 @@ The built binaries are located under
 where `PLATFORM` and `CONFIGURATION` are the one provided at build time. 
 
 # Acknowledgements
+
+## Implementation lineage and adapted work
+
+BetterJoy is built on a long chain of open-source controller work. The following projects
+contributed code, algorithms, protocol knowledge, or concrete implementation patterns used by
+this repository:
+
+* [BetterJoy / BetterJoyForCemu](https://github.com/Davidobot/BetterJoy) by David Khachaturov
+  (Davidobot) is the original project and the foundation of this fork. Its Joy-Con protocol,
+  controller lifecycle, CemuHook motion server, input mapping, and ViGEm output work remain at
+  the core of this codebase.
+* [JoyconLib](https://github.com/Looking-Glass/JoyconLib) by Looking-Glass and
+  [JoyCon-Driver](https://github.com/mfosse/JoyCon-Driver) by mfosse provided the early Joy-Con
+  HID/protocol implementations from which BetterJoy's controller code was derived.
+* [GamepadMotionHelpers](https://github.com/JibbSmart/GamepadMotionHelpers) by Julian "Jibb"
+  Smart is the principal reference for the current filtered gyro-mouse and gyro-stick motion
+  math. `GyroMousePlayerSpace` adapts its Y-up coordinate convention, gyro-propagated gravity
+  tracking, shakiness-aware accelerometer correction, world-space yaw/pitch projection, and
+  side-on singularity reduction. BetterJoy adds Joy-Con-specific axis normalization, grip
+  recentering, diagnostics, and hardware-tested drift compensation around that foundation.
+* [JoyShockMapper](https://github.com/JibbSmart/JoyShockMapper) and the actively developed
+  [Electronicks fork](https://github.com/Electronicks/JoyShockMapper) were reference
+  implementations for gyro-space selection and practical pointer behavior. BetterJoy's mapped
+  2D smoothing, low-speed tightening, real-world traversal/sensitivity control, and separation
+  of gravity reference from gyro-produced cursor displacement were informed by this work.
+* [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), also by JibbSmart, informed
+  the canonical Nintendo-to-Y-up sensor frame and reference mouse behavior. Its v3.0 release is
+  additionally used by the standalone controller timing harness under `tools/JoyShockTiming`.
+* Sebastian Madgwick's IMU/AHRS algorithm and the C# implementation published by
+  [x-io Technologies](https://github.com/xioTechnologies/Open-Source-AHRS-With-x-IMU) are the
+  source of `MadgwickAHRS.cs`, subsequently hardened and extended in BetterJoy with reset and
+  recenter behavior.
+* [FakerInput](https://github.com/Ryochan7/FakerInput) by Ryochan7 supplies the optional signed
+  virtual HID input driver. BetterJoy's FakerInput backend implements its HID control protocol
+  for relative/absolute mouse movement, wheel reports, and mouse-button state so gyro mouse can
+  work across elevated windows, the Windows sign-in screen, and service/session boundaries. The
+  bundled installer and license remain attributable to the upstream project.
+* The UDP server is largely derived from rajkosto's
+  [ScpToolkit](https://github.com/rajkosto/ScpToolkit). ViGEmBus, ViGEmClient, HidHide, and their
+  management libraries come from [Nefarius](https://github.com/nefarius).
+
+## Implementations studied during the motion-control rework
+
+The following projects were reviewed as independent comparisons for gyro mouse, gyro-to-stick,
+calibration, smoothing, sensitivity, remapping, and Windows virtual-controller behavior. Their
+source was not copied directly into BetterJoy, but their approaches materially informed design
+decisions and hardware tests:
+
+* [Yamakaky/gyromouse](https://github.com/Yamakaky/gyromouse)
+* [ascarrambad/gyromouse](https://github.com/ascarrambad/gyromouse)
+* [Handheld Companion](https://github.com/Valkirie/HandheldCompanion)
+* [DS4Windows](https://github.com/Ryochan7/DS4Windows)
+* [GyroWiki](https://gyrowiki.jibbsmart.com/) for the documented player-space, world-space,
+  sensitivity, calibration, and gyro-aiming principles implemented by the projects above
+
+Third-party copyright and license notices for code and binaries distributed with BetterJoy are
+also retained in [LICENSE](LICENSE) and alongside bundled driver packages.
+
+## Original BetterJoy acknowledgements
+
 A massive thanks goes out to [rajkosto](https://github.com/rajkosto/) for putting up with 17 emails and replying very quickly to my silly queries. The UDP server is also mostly taken from his [ScpToolkit](https://github.com/rajkosto/ScpToolkit) repo.
 
 Also I am very grateful to [mfosse](https://github.com/mfosse/JoyCon-Driver) for pointing me in the right direction and to [Looking-Glass](https://github.com/Looking-Glass/JoyconLib) without whom I would not be able to figure anything out. (being honest here - the joycon code is his)
