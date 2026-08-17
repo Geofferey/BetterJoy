@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
@@ -859,16 +860,19 @@ namespace BetterJoyForCemu {
         private int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
             byte[] raw_buf = new byte[report_len];
-            long hidCallStart = GyroMouseDebugLogging ? Stopwatch.GetTimestamp() : 0;
+            bool captureImuDiagnostics = GyroMouseDebugLogging || GyroStickDebugLogging;
+            long hidCallStart = captureImuDiagnostics ? Stopwatch.GetTimestamp() : 0;
             int ret = HIDapi.hid_read_timeout(handle, raw_buf, new UIntPtr(report_len), 5);
-            long hidCallEnd = GyroMouseDebugLogging ? Stopwatch.GetTimestamp() : 0;
+            long hidCallEnd = captureImuDiagnostics ? Stopwatch.GetTimestamp() : 0;
             RecordGyroMouseHidCall(ret, ret > 0 ? raw_buf[1] : (byte)0,
                                    hidCallStart, hidCallEnd);
 
             if (ret > 0) {
+                BeginGyroStickDiagnosticReport();
                 // Process packets as soon as they come
                 for (int n = 0; n < 3; n++) {
                     ExtractIMUValues(raw_buf, n);
+                    AccumulateGyroStickDiagnosticSample();
 
                     byte lag = (byte)Math.Max(0, raw_buf[1] - ts_en - 3);
                     if (n == 0) {
@@ -884,6 +888,7 @@ namespace BetterJoyForCemu {
                             BatteryChanged();
                     }
                     ProcessGyroMouseSample(n == 2);
+                    ProcessGyroStickSample(n == 2);
                     Timestamp += 5000; // 5ms difference
 
                     packetCounter++;
@@ -898,6 +903,8 @@ namespace BetterJoyForCemu {
                         }
                     }
                 }
+
+                RecordGyroStickDiagnosticReport(raw_buf[1], hidCallEnd);
 
                 // no reason to send XInput reports so often
                 if (out_xbox != null) {
@@ -1039,6 +1046,7 @@ namespace BetterJoyForCemu {
         // spent most of its effort chasing out of the real path. Only turn on while deliberately
         // capturing a test.
         bool GyroMouseDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDebugLogging"]);
+        bool GyroStickDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroStickDebugLogging"]);
         bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
         bool GyroMouseScreenWrap = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseScreenWrap"]);
         int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
@@ -1249,21 +1257,32 @@ namespace BetterJoyForCemu {
             }
 
             if (extraGyroFeature.Substring(0, 3) == "joy") {
-                if (gyroEnabled) {
-                    float[] control_stick = (extraGyroFeature == "joy_left") ? stick : stick2;
+                float[] control_stick = (extraGyroFeature == "joy_left") ? stick : stick2;
+                float physicalX = control_stick[0];
+                float physicalY = control_stick[1];
+                float dx = 0.0f, dy = 0.0f;
 
-                    float dx, dy;
+                gyroStickActiveThisReport = gyroEnabled;
+                gyroStickReportDt = dt;
+
+                if (gyroEnabled) {
                     if (UseFilteredIMU) {
-                        dx = (GyroStickSensitivityX * (cur_rotation[1] - cur_rotation[4])); // yaw
-                        dy = -(GyroStickSensitivityY * (cur_rotation[0] - cur_rotation[3])); // pitch
+                        // The filtered path is applied after all three IMU sub-samples have been
+                        // consumed by ProcessGyroStickSample. Leave the physical stick untouched
+                        // here so the report-level flush has a clean base value.
                     } else {
                         dx = (GyroStickSensitivityX * (gyr_g.Z * dt)); // yaw
                         dy = -(GyroStickSensitivityY * (gyr_g.Y * dt)); // pitch
-                    }
 
-                    control_stick[0] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[0] / GyroStickReduction + dx));
-                    control_stick[1] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[1] / GyroStickReduction + dy));
+                        float stickReduction = EffectiveGyroStickReduction();
+                        control_stick[0] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[0] / stickReduction + dx));
+                        control_stick[1] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[1] / stickReduction + dy));
+                    }
                 }
+
+                if (!UseFilteredIMU)
+                    CaptureGyroStickDiagnosticOutput(gyroEnabled, dt, physicalX, physicalY,
+                                                      dx, dy, control_stick[0], control_stick[1]);
             }
 
             // Movement itself is applied per IMU sub-sample in ProcessGyroMouseSample. Reconcile
@@ -1333,6 +1352,14 @@ namespace BetterJoyForCemu {
         private readonly GyroMouseOrientation gyroMouseOrientation = new GyroMouseOrientation();
         private readonly GyroMousePlayerSpace gyroMousePlayerSpace = new GyroMousePlayerSpace();
 
+        // Gyro-stick shares the exact gravity tracker and world-space rate mapper proven by
+        // gyro-mouse, but keeps independent state so enabling one feature cannot perturb the
+        // other. Fusion determines the gravity-relative axes; only gyro rate creates output.
+        private readonly GyroMousePlayerSpace gyroStickPlayerSpace = new GyroMousePlayerSpace();
+        private float pendingGyroStickDx, pendingGyroStickDy;
+        private bool gyroStickActiveThisReport;
+        private float gyroStickReportDt;
+
         // Smooth mapped 2D motion, not the raw 3D sensor. The filtered state is blended back
         // toward the live rate as speed rises, preserving fine-motion stability without making
         // fast turns feel delayed.
@@ -1345,6 +1372,274 @@ namespace BetterJoyForCemu {
         // another filtered gyro feature jump/bend badly after join/split. This snapshot is read
         // and updated only by the controller's poll thread.
         private Joycon gyroMouseOrientationPartner;
+
+        // Gyro-stick evidence capture. This records the applied path beside the legacy-frame raw
+        // rate candidate and all three calibrated sensor samples. Nintendo reports bundle three
+        // 5ms IMU samples; keeping them together makes timing loss, axis leakage, acceleration
+        // contamination and source ownership distinguishable in one capture. The Euler/AHRS
+        // columns remain diagnostic comparators and no longer drive filtered stick displacement.
+        private static readonly ConcurrentQueue<string> gyroStickDiagQueue =
+            new ConcurrentQueue<string>();
+        private static int gyroStickDiagWriterStarted;
+        private static int gyroStickDiagHeaderWritten;
+        private const float ImuSamplePeriodSeconds = 0.005f;
+
+        private long gyroStickDiagReportSequence;
+        private long gyroStickDiagLastArrivalTimestamp;
+        private bool gyroStickDiagHasDeviceTimer;
+        private byte gyroStickDiagLastDeviceTimer;
+        private int gyroStickDiagSampleCount;
+        private Vector3 gyroStickDiagLegacyGyroSum;
+        private Vector3 gyroStickDiagLegacyAccelSum;
+        private Vector3 gyroStickDiagSensorGyroSum;
+        private Vector3 gyroStickDiagSensorAccelSum;
+        private Vector3 gyroStickDiagFirstLegacyGyro;
+        private Vector3 gyroStickDiagSecondLegacyGyro;
+        private Vector3 gyroStickDiagThirdLegacyGyro;
+        private Vector3 gyroStickDiagFirstLegacyAccel;
+        private float gyroStickDiagDt;
+        private bool gyroStickDiagActive;
+        private float gyroStickDiagPhysicalX, gyroStickDiagPhysicalY;
+        private float gyroStickDiagAppliedDx, gyroStickDiagAppliedDy;
+        private float gyroStickDiagOutputX, gyroStickDiagOutputY;
+        private float gyroStickDiagPitch, gyroStickDiagYaw, gyroStickDiagRoll;
+        private float gyroStickDiagPitchDelta, gyroStickDiagYawDelta, gyroStickDiagRollDelta;
+
+        private bool IsGyroStickConfigured() {
+            return extraGyroFeature != null &&
+                extraGyroFeature.StartsWith("joy", StringComparison.Ordinal);
+        }
+
+        private void BeginGyroStickDiagnosticReport() {
+            if (!GyroStickDebugLogging || !IsGyroStickConfigured())
+                return;
+
+            gyroStickDiagSampleCount = 0;
+            gyroStickDiagLegacyGyroSum = Vector3.Zero;
+            gyroStickDiagLegacyAccelSum = Vector3.Zero;
+            gyroStickDiagSensorGyroSum = Vector3.Zero;
+            gyroStickDiagSensorAccelSum = Vector3.Zero;
+            gyroStickDiagFirstLegacyGyro = Vector3.Zero;
+            gyroStickDiagSecondLegacyGyro = Vector3.Zero;
+            gyroStickDiagThirdLegacyGyro = Vector3.Zero;
+            gyroStickDiagFirstLegacyAccel = Vector3.Zero;
+            gyroStickDiagDt = 0.0f;
+            gyroStickDiagActive = false;
+            gyroStickDiagPhysicalX = gyroStickDiagPhysicalY = 0.0f;
+            gyroStickDiagAppliedDx = gyroStickDiagAppliedDy = 0.0f;
+            gyroStickDiagOutputX = gyroStickDiagOutputY = 0.0f;
+            gyroStickDiagPitch = gyroStickDiagYaw = gyroStickDiagRoll = 0.0f;
+            gyroStickDiagPitchDelta = gyroStickDiagYawDelta = gyroStickDiagRollDelta = 0.0f;
+        }
+
+        private void AccumulateGyroStickDiagnosticSample() {
+            if (!GyroStickDebugLogging || !IsGyroStickConfigured())
+                return;
+
+            if (gyroStickDiagSampleCount == 0) {
+                gyroStickDiagFirstLegacyGyro = gyr_g;
+                gyroStickDiagFirstLegacyAccel = acc_g;
+            } else if (gyroStickDiagSampleCount == 1) {
+                gyroStickDiagSecondLegacyGyro = gyr_g;
+            } else if (gyroStickDiagSampleCount == 2) {
+                gyroStickDiagThirdLegacyGyro = gyr_g;
+            }
+            gyroStickDiagLegacyGyroSum += gyr_g;
+            gyroStickDiagLegacyAccelSum += acc_g;
+            gyroStickDiagSensorGyroSum += gyroMouseSensorRate;
+            gyroStickDiagSensorAccelSum += gyroMouseSensorAccel;
+            gyroStickDiagSampleCount++;
+        }
+
+        private void CaptureGyroStickDiagnosticOutput(bool gyroEnabled, float dt,
+                                                        float physicalX, float physicalY,
+                                                        float dx, float dy,
+                                                        float outputX, float outputY) {
+            if (!GyroStickDebugLogging || !IsGyroStickConfigured())
+                return;
+
+            gyroStickDiagActive = gyroEnabled;
+            gyroStickDiagDt = dt;
+            gyroStickDiagPhysicalX = physicalX;
+            gyroStickDiagPhysicalY = physicalY;
+            gyroStickDiagAppliedDx = dx;
+            gyroStickDiagAppliedDy = dy;
+            gyroStickDiagOutputX = outputX;
+            gyroStickDiagOutputY = outputY;
+            if (cur_rotation != null && cur_rotation.Length >= 6) {
+                gyroStickDiagPitch = cur_rotation[0];
+                gyroStickDiagYaw = cur_rotation[1];
+                gyroStickDiagRoll = cur_rotation[2];
+                gyroStickDiagPitchDelta = cur_rotation[0] - cur_rotation[3];
+                gyroStickDiagYawDelta = cur_rotation[1] - cur_rotation[4];
+                gyroStickDiagRollDelta = cur_rotation[2] - cur_rotation[5];
+            }
+        }
+
+        private static string GyroStickCsv(float value) {
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string GyroStickCsv(double value) {
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static void EnsureGyroStickDiagWriterStarted() {
+            if (Interlocked.CompareExchange(ref gyroStickDiagWriterStarted, 1, 0) != 0)
+                return;
+            new Thread(GyroStickDiagWriterLoop) {
+                IsBackground = true,
+                Name = "GyroStickDiagLogWriter"
+            }.Start();
+        }
+
+        private static void GyroStickDiagWriterLoop() {
+            string logPath = Path.Combine(AppPaths.DataDir, "gyro_stick_debug.csv");
+            const string header =
+                "utc,report,source,serial,pad_id,virtual_sequence,submit,target,active,filtered,beta," +
+                "timer,timer_delta,arrival_ms,legacy_dt_ms,sensitivity_x,sensitivity_y,reduction," +
+                "physical_x,physical_y,applied_dx,applied_dy,output_x,output_y," +
+                "euler_pitch_deg,euler_yaw_deg,euler_roll_deg,euler_dp_deg,euler_dy_deg,euler_dr_deg," +
+                "sample0_gx_dps,sample0_gy_dps,sample0_gz_dps," +
+                "sample1_gx_dps,sample1_gy_dps,sample1_gz_dps," +
+                "sample2_gx_dps,sample2_gy_dps,sample2_gz_dps," +
+                "avg_gx_dps,avg_gy_dps,avg_gz_dps,integrated_pitch_deg,integrated_yaw_deg," +
+                "rate_candidate_dx,rate_candidate_dy," +
+                "avg_ax_g,avg_ay_g,avg_az_g,avg_accel_mag_g," +
+                "sensor_gx_dps,sensor_gy_dps,sensor_gz_dps," +
+                "sensor_ax_g,sensor_ay_g,sensor_az_g,sensor_accel_mag_g,q0,q1,q2,q3\r\n";
+
+            while (true) {
+                Thread.Sleep(500);
+                if (gyroStickDiagQueue.IsEmpty)
+                    continue;
+
+                var batch = new StringBuilder();
+                if (Interlocked.CompareExchange(ref gyroStickDiagHeaderWritten, 1, 0) == 0) {
+                    try {
+                        if (!File.Exists(logPath) || new FileInfo(logPath).Length == 0)
+                            batch.Append(header);
+                    } catch {
+                        batch.Append(header);
+                    }
+                }
+                while (gyroStickDiagQueue.TryDequeue(out string line))
+                    batch.Append(line);
+
+                try {
+                    File.AppendAllText(logPath, batch.ToString());
+                } catch {
+                    // Diagnostic only: never let an unavailable log path affect controller I/O.
+                }
+            }
+        }
+
+        private void RecordGyroStickDiagnosticReport(byte deviceTimer, long arrivalTimestamp) {
+            if (!GyroStickDebugLogging || !IsGyroStickConfigured() ||
+                gyroStickDiagSampleCount == 0)
+                return;
+
+            // Match the feature's effective activation gate: diagnostics may be enabled in the
+            // config for an entire test session, but inactive gyro must not create log rows. Also
+            // discard timing continuity across the inactive gap so the first report after a
+            // reactivation does not claim that the whole off period was one delayed packet.
+            if (!gyroStickDiagActive) {
+                gyroStickDiagLastArrivalTimestamp = 0;
+                gyroStickDiagHasDeviceTimer = false;
+                return;
+            }
+
+            EnsureGyroStickDiagWriterStarted();
+
+            double arrivalMs = gyroStickDiagLastArrivalTimestamp == 0 ? 0.0 :
+                (arrivalTimestamp - gyroStickDiagLastArrivalTimestamp) * 1000.0 /
+                Stopwatch.Frequency;
+            gyroStickDiagLastArrivalTimestamp = arrivalTimestamp;
+
+            int timerDelta = gyroStickDiagHasDeviceTimer
+                ? (byte)(deviceTimer - gyroStickDiagLastDeviceTimer) : 0;
+            gyroStickDiagLastDeviceTimer = deviceTimer;
+            gyroStickDiagHasDeviceTimer = true;
+
+            float inverseSamples = 1.0f / gyroStickDiagSampleCount;
+            Vector3 averageGyro = gyroStickDiagLegacyGyroSum * inverseSamples;
+            Vector3 averageAccel = gyroStickDiagLegacyAccelSum * inverseSamples;
+            Vector3 averageSensorGyro = gyroStickDiagSensorGyroSum * inverseSamples;
+            Vector3 averageSensorAccel = gyroStickDiagSensorAccelSum * inverseSamples;
+            float radiansToDegrees = 57.2957795f;
+            float degreesToRadians = 0.0174532925f;
+            float integratedPitch = gyroStickDiagLegacyGyroSum.Y * ImuSamplePeriodSeconds;
+            float integratedYaw = gyroStickDiagLegacyGyroSum.Z * ImuSamplePeriodSeconds;
+            float rateCandidateDx = GyroStickSensitivityX * integratedYaw * degreesToRadians;
+            float rateCandidateDy = -GyroStickSensitivityY * integratedPitch * degreesToRadians;
+            float[] quaternion = AHRS.Quaternion;
+            string submit = out_xbox != null ? "xbox" : (out_ds4 != null ? "ds4" : "none");
+
+            string[] fields = {
+                DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                (++gyroStickDiagReportSequence).ToString(CultureInfo.InvariantCulture),
+                GyroMouseDiagnosticSource(),
+                serial_number == null ? String.Empty : serial_number.Replace(',', '_'),
+                PadId.ToString(CultureInfo.InvariantCulture),
+                virtualControllerSequence.ToString(CultureInfo.InvariantCulture),
+                submit,
+                extraGyroFeature,
+                gyroStickDiagActive ? "1" : "0",
+                UseFilteredIMU ? "1" : "0",
+                GyroStickCsv(AHRS.Beta),
+                deviceTimer.ToString(CultureInfo.InvariantCulture),
+                timerDelta.ToString(CultureInfo.InvariantCulture),
+                GyroStickCsv(arrivalMs),
+                GyroStickCsv(gyroStickDiagDt * 1000.0f),
+                GyroStickCsv(GyroStickSensitivityX),
+                GyroStickCsv(GyroStickSensitivityY),
+                GyroStickCsv(GyroStickReduction),
+                GyroStickCsv(gyroStickDiagPhysicalX),
+                GyroStickCsv(gyroStickDiagPhysicalY),
+                GyroStickCsv(gyroStickDiagAppliedDx),
+                GyroStickCsv(gyroStickDiagAppliedDy),
+                GyroStickCsv(gyroStickDiagOutputX),
+                GyroStickCsv(gyroStickDiagOutputY),
+                GyroStickCsv(gyroStickDiagPitch * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagYaw * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagRoll * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagPitchDelta * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagYawDelta * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagRollDelta * radiansToDegrees),
+                GyroStickCsv(gyroStickDiagFirstLegacyGyro.X),
+                GyroStickCsv(gyroStickDiagFirstLegacyGyro.Y),
+                GyroStickCsv(gyroStickDiagFirstLegacyGyro.Z),
+                GyroStickCsv(gyroStickDiagSecondLegacyGyro.X),
+                GyroStickCsv(gyroStickDiagSecondLegacyGyro.Y),
+                GyroStickCsv(gyroStickDiagSecondLegacyGyro.Z),
+                GyroStickCsv(gyroStickDiagThirdLegacyGyro.X),
+                GyroStickCsv(gyroStickDiagThirdLegacyGyro.Y),
+                GyroStickCsv(gyroStickDiagThirdLegacyGyro.Z),
+                GyroStickCsv(averageGyro.X),
+                GyroStickCsv(averageGyro.Y),
+                GyroStickCsv(averageGyro.Z),
+                GyroStickCsv(integratedPitch),
+                GyroStickCsv(integratedYaw),
+                GyroStickCsv(rateCandidateDx),
+                GyroStickCsv(rateCandidateDy),
+                GyroStickCsv(averageAccel.X),
+                GyroStickCsv(averageAccel.Y),
+                GyroStickCsv(averageAccel.Z),
+                GyroStickCsv(averageAccel.Length()),
+                GyroStickCsv(averageSensorGyro.X),
+                GyroStickCsv(averageSensorGyro.Y),
+                GyroStickCsv(averageSensorGyro.Z),
+                GyroStickCsv(averageSensorAccel.X),
+                GyroStickCsv(averageSensorAccel.Y),
+                GyroStickCsv(averageSensorAccel.Z),
+                GyroStickCsv(averageSensorAccel.Length()),
+                GyroStickCsv(quaternion[0]),
+                GyroStickCsv(quaternion[1]),
+                GyroStickCsv(quaternion[2]),
+                GyroStickCsv(quaternion[3])
+            };
+            gyroStickDiagQueue.Enqueue(string.Join(",", fields) + "\r\n");
+        }
 
         // TEMPORARY diagnostic instrumentation for the figure-eight/circle drift investigation
         // (see CODE_REVIEW.md). Everything below is scoped to the CURRENT interval only (reset
@@ -1844,6 +2139,7 @@ namespace BetterJoyForCemu {
             gyroMouseNeutralX = new Vector2(1.0f, 0.0f);
             gyroMouseNeutralY = new Vector2(0.0f, 1.0f);
             ResetGyroMouseMotionState(true);
+            ResetGyroStickMotionState(true);
             ResetGyroMouseBiasEstimator();
             AHRS.Reset();
             gyroMouseOrientationPartner = currentPartner;
@@ -1954,6 +2250,85 @@ namespace BetterJoyForCemu {
                 filteredGyroMouseRate = current;
             yawRate = result.X;
             pitchRate = result.Y;
+        }
+
+        private void ResetGyroStickMotionState(bool resetPlayerSpace = false) {
+            pendingGyroStickDx = pendingGyroStickDy = 0.0f;
+            gyroStickActiveThisReport = false;
+            if (resetPlayerSpace)
+                gyroStickPlayerSpace.Reset();
+        }
+
+        private float EffectiveGyroStickReduction() {
+            // Reduction is a divisor. Treat zero/invalid values as the neutral 1x setting rather
+            // than allowing centered 0/0 -> NaN and tiny physical-stick noise / 0 -> +/-Infinity,
+            // which later clamps into apparently direction-sensitive full deflection.
+            return GyroStickReduction > 0.0f &&
+                   !float.IsNaN(GyroStickReduction) &&
+                   !float.IsInfinity(GyroStickReduction)
+                ? GyroStickReduction
+                : 1.0f;
+        }
+
+        // Filtered gyro-stick consumes the same canonical IMU frame and gravity-relative rate
+        // mapper as filtered gyro-mouse. Nintendo supplies three samples per report, so integrate
+        // all three at their fixed 5 ms cadence and apply the result once at the report boundary.
+        // Crucially, accelerometer data updates only the gravity frame: with zero gyro rate these
+        // accumulators remain zero regardless of translation or AHRS correction.
+        private void ProcessGyroStickSample(bool flushToStick) {
+            if (!IsGyroStickConfigured() || !UseFilteredIMU) {
+                if (flushToStick)
+                    ResetGyroStickMotionState();
+                return;
+            }
+
+            const float subSamplePeriod = 0.005f;
+            const float degreesToRadians = 0.0174532925f;
+            Vector3 stickGyroRate = gyroMouseSensorRate;
+            Vector3 stickAccel = gyroMouseSensorAccel;
+
+            // Keep gravity current while the activation control is released so reactivation has
+            // no stale-frame correction. Update cannot create output by itself.
+            gyroStickPlayerSpace.Update(stickGyroRate, stickAccel, subSamplePeriod);
+
+            if (gyroStickActiveThisReport) {
+                float yawRate;
+                float pitchRate;
+                float ignoredRoll;
+                gyroStickPlayerSpace.Map(stickGyroRate, subSamplePeriod, out yawRate,
+                                         out pitchRate, out ignoredRoll);
+                pendingGyroStickDx += GyroStickSensitivityX * yawRate *
+                                      subSamplePeriod * degreesToRadians;
+                // The canonical Player Space pitch axis is opposite BetterJoy's virtual-stick
+                // Y convention. Positive mapped pitch therefore adds to stick Y here; the
+                // previous subtraction made raising/lowering aim feel inverted.
+                pendingGyroStickDy += GyroStickSensitivityY * pitchRate *
+                                      subSamplePeriod * degreesToRadians;
+            }
+
+            if (!flushToStick)
+                return;
+
+            float[] controlStick = extraGyroFeature == "joy_left" ? stick : stick2;
+            float physicalX = controlStick[0];
+            float physicalY = controlStick[1];
+            float dx = gyroStickActiveThisReport ? pendingGyroStickDx : 0.0f;
+            float dy = gyroStickActiveThisReport ? pendingGyroStickDy : 0.0f;
+
+            if (gyroStickActiveThisReport) {
+                float stickReduction = EffectiveGyroStickReduction();
+                controlStick[0] = Math.Max(-1.0f, Math.Min(1.0f,
+                    physicalX / stickReduction + dx));
+                controlStick[1] = Math.Max(-1.0f, Math.Min(1.0f,
+                    physicalY / stickReduction + dy));
+            }
+
+            CaptureGyroStickDiagnosticOutput(gyroStickActiveThisReport,
+                                              gyroStickReportDt,
+                                              physicalX, physicalY,
+                                              dx, dy,
+                                              controlStick[0], controlStick[1]);
+            pendingGyroStickDx = pendingGyroStickDy = 0.0f;
         }
 
         // flushToMouse: integrate every sub-sample (all 3, for accuracy - see the field comment
