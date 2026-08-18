@@ -41,6 +41,16 @@ namespace BetterJoyForCemu {
         private Label profileStatusLabel;
         private Label virtualControllerNameLabel;
         private Label virtualControllerDetailLabel;
+        private ComboBox useAsSelector;
+        private ComboBox inactivitySelector;
+        private ComboBox gyroActivationModeSelector;
+        private CheckBox autoPowerOffCheckBox;
+        private CheckBox homeLongPowerOffCheckBox;
+        private CheckBox dragToggleCheckBox;
+        private CheckBox swapAbCheckBox;
+        private CheckBox swapXyCheckBox;
+        private CheckBox homeLedCheckBox;
+        private bool updatingProfileOptions;
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
         private Panel profilePageHost;
@@ -246,12 +256,15 @@ namespace BetterJoyForCemu {
 
             Panel bindingsPage = BuildBindingsPage();
             Panel gyroPage = BuildGyroPage();
+            Panel behaviorPage = BuildDeviceBehaviorPage();
             Panel virtualControllerPage = BuildVirtualControllerPage();
             profilePages.Add("bindings", bindingsPage);
             profilePages.Add("gyro", gyroPage);
+            profilePages.Add("behavior", behaviorPage);
             profilePages.Add("virtual", virtualControllerPage);
             profilePageHost.Controls.Add(bindingsPage);
             profilePageHost.Controls.Add(gyroPage);
+            profilePageHost.Controls.Add(behaviorPage);
             profilePageHost.Controls.Add(virtualControllerPage);
             ShowProfilePage("gyro");
 
@@ -334,7 +347,8 @@ namespace BetterJoyForCemu {
             sidebar.Controls.Add(profileNavigationAccent);
             sidebar.Controls.Add(CreateNavigationButton("Bindings", "bindings", 60));
             sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 104));
-            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 148));
+            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 148));
+            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 192));
             return sidebar;
         }
 
@@ -444,14 +458,74 @@ namespace BetterJoyForCemu {
             return page;
         }
 
+        private Panel BuildDeviceBehaviorPage() {
+            Panel page = CreateProfilePage("Device behavior",
+                "Control power, button layout, gyro activation, and controller lighting.");
+
+            AddSectionHeading(page, "Power", 96,
+                "Choose when this controller powers itself off.");
+            autoPowerOffCheckBox = CreateProfileCheckBox(
+                "Power off when BetterJoy exits", 24, 153, "AutoPowerOff");
+            homeLongPowerOffCheckBox = CreateProfileCheckBox(
+                "Hold Home / Capture to power off", 315, 153, "HomeLongPowerOff");
+            page.Controls.Add(autoPowerOffCheckBox);
+            page.Controls.Add(homeLongPowerOffCheckBox);
+            page.Controls.Add(CreateLabel("After inactivity", 24, 198, ProfileText, false));
+            inactivitySelector = CreateProfileComboBox(145, 192, 180);
+            inactivitySelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            inactivitySelector.Items.AddRange(new object[] {
+                "Never", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
+            });
+            inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(inactivitySelector);
+
+            page.Controls.Add(CreateDivider(24, 244));
+            AddSectionHeading(page, "Input behavior", 261,
+                "Customize face buttons, mouse dragging, and gyro activation for this profile.");
+            swapAbCheckBox = CreateProfileCheckBox("Swap A / B", 24, 318, "SwapAB");
+            swapXyCheckBox = CreateProfileCheckBox("Swap X / Y", 190, 318, "SwapXY");
+            dragToggleCheckBox = CreateProfileCheckBox(
+                "Toggle mouse drag", 356, 318, "DragToggle");
+            page.Controls.Add(swapAbCheckBox);
+            page.Controls.Add(swapXyCheckBox);
+            page.Controls.Add(dragToggleCheckBox);
+            page.Controls.Add(CreateLabel("Gyro binding behavior", 24, 366, ProfileText, false));
+            gyroActivationModeSelector = CreateProfileComboBox(180, 360, 180);
+            gyroActivationModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            gyroActivationModeSelector.Items.AddRange(new object[] { "Hold", "Toggle" });
+            gyroActivationModeSelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(gyroActivationModeSelector);
+            Label gyroHelp = CreateLabel(
+                "Applies to mouse, left-stick, and right-stick gyro activation bindings.",
+                24, 399, ProfileMuted, false, 8.5F);
+            page.Controls.Add(gyroHelp);
+
+            page.Controls.Add(CreateDivider(24, 440));
+            AddSectionHeading(page, "Lighting", 457,
+                "Control the Home-button ring light for this controller.");
+            homeLedCheckBox = CreateProfileCheckBox(
+                "Keep the Home LED on", 24, 514, "HomeLEDOn");
+            page.Controls.Add(homeLedCheckBox);
+            return page;
+        }
+
         private Panel BuildVirtualControllerPage() {
             Panel page = CreateProfilePage("Virtual controller",
                 "Inspect and test the virtual gamepad connected to this profile.");
             AddSectionHeading(page, "Output device", 96,
                 "Windows exposes connected profiles as virtual game controllers.");
 
+            page.Controls.Add(CreateLabel("Use as", 24, 163, ProfileText, false));
+            useAsSelector = CreateProfileComboBox(115, 157, 300);
+            useAsSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            useAsSelector.Items.AddRange(new object[] {
+                "Xbox 360 controller", "DualShock 4 controller", "Disabled",
+            });
+            useAsSelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(useAsSelector);
+
             Panel deviceCard = new Panel {
-                Location = new Point(24, 157),
+                Location = new Point(24, 210),
                 Size = new Size(570, 142),
                 BackColor = Color.FromArgb(38, 39, 41),
             };
@@ -473,8 +547,8 @@ namespace BetterJoyForCemu {
             deviceCard.Controls.Add(gameControllersButton);
             page.Controls.Add(deviceCard);
 
-            page.Controls.Add(CreateDivider(24, 328));
-            AddSectionHeading(page, "About testing", 345,
+            page.Controls.Add(CreateDivider(24, 379));
+            AddSectionHeading(page, "About testing", 396,
                 "Connected profiles open the matching virtual controller's Properties dialog. " +
                 "Disconnected profiles open the standard Windows Game Controllers list.");
             return page;
@@ -529,6 +603,114 @@ namespace BetterJoyForCemu {
                 BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
             };
+        }
+
+        private ComboBox CreateProfileComboBox(int left, int top, int width) {
+            return new ComboBox {
+                Location = new Point(left, top),
+                Size = new Size(width, 25),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = ProfileSurface,
+                ForeColor = ProfileText,
+                Font = new Font("Segoe UI", 9F),
+            };
+        }
+
+        private CheckBox CreateProfileCheckBox(string text, int left, int top, string optionKey) {
+            CheckBox checkBox = new CheckBox {
+                AutoSize = true,
+                Text = text,
+                Tag = optionKey,
+                Location = new Point(left, top),
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = ProfileText,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9F),
+                Cursor = Cursors.Hand,
+            };
+            checkBox.CheckedChanged += ProfileOptionControlChanged;
+            return checkBox;
+        }
+
+        private void ProfileOptionControlChanged(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            CheckBox checkBox = sender as CheckBox;
+            if (checkBox != null) {
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, (string)checkBox.Tag, checkBox.Checked.ToString().ToLowerInvariant());
+            } else if (sender == useAsSelector) {
+                string value = useAsSelector.SelectedIndex == 0
+                    ? ControllerMappings.UseAsXbox360
+                    : (useAsSelector.SelectedIndex == 1
+                        ? ControllerMappings.UseAsDualShock4
+                        : ControllerMappings.UseAsNone);
+                ControllerMappings.SetOptionValue(SelectedProfileId, "UseAs", value);
+                UpdateProfilePresentation(SelectedProfile);
+            } else if (sender == gyroActivationModeSelector) {
+                ControllerMappings.SetOptionValue(SelectedProfileId, "GyroHoldToggle",
+                    (gyroActivationModeSelector.SelectedIndex == 0).ToString().ToLowerInvariant());
+            } else if (sender == inactivitySelector) {
+                int minutes = InactivityMinutesFromText(inactivitySelector.Text);
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, "PowerOffInactivity", minutes.ToString());
+            }
+        }
+
+        private void LoadProfileOptions(bool hasProfile) {
+            Control[] controls = {
+                useAsSelector, inactivitySelector, gyroActivationModeSelector,
+                autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
+                swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
+            };
+            updatingProfileOptions = true;
+            try {
+                foreach (Control control in controls) {
+                    if (control != null)
+                        control.Enabled = hasProfile;
+                }
+                if (!hasProfile)
+                    return;
+
+                string useAs = ControllerMappings.OptionValue(SelectedProfileId, "UseAs");
+                useAsSelector.SelectedIndex = useAs == ControllerMappings.UseAsXbox360
+                    ? 0
+                    : (useAs == ControllerMappings.UseAsDualShock4 ? 1 : 2);
+                autoPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "AutoPowerOff");
+                homeLongPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "HomeLongPowerOff");
+                dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "DragToggle");
+                swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
+                swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
+                homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
+                gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
+
+                int inactivityMinutes = ControllerMappings.IntOption(
+                    SelectedProfileId, "PowerOffInactivity", -1);
+                string inactivityText = inactivityMinutes <= 0
+                    ? "Never"
+                    : inactivityMinutes + " minutes";
+                int inactivityIndex = inactivitySelector.FindStringExact(inactivityText);
+                if (inactivityIndex < 0) {
+                    inactivitySelector.Items.Add(inactivityText);
+                    inactivityIndex = inactivitySelector.Items.Count - 1;
+                }
+                inactivitySelector.SelectedIndex = inactivityIndex;
+            } finally {
+                updatingProfileOptions = false;
+            }
+        }
+
+        private static int InactivityMinutesFromText(string text) {
+            if (String.IsNullOrEmpty(text) || text == "Never")
+                return -1;
+            string number = new string(text.TakeWhile(Char.IsDigit).ToArray());
+            int minutes;
+            return Int32.TryParse(number, out minutes) ? minutes : -1;
         }
 
         private void StyleMappingButton(SplitButton button) {
@@ -609,6 +791,7 @@ namespace BetterJoyForCemu {
         }
 
         private void RefreshControllerChoices() {
+            bool wasInitialSelection = initialControllerSelection;
             List<ControllerProfileInfo> connectedChoices = serviceClient != null
                 ? remoteProfiles.OrderByDescending(p => p.ConnectionSequence).ToList()
                 : ControllerMappings.ConnectedProfiles(Program.mgr?.j);
@@ -637,7 +820,9 @@ namespace BetterJoyForCemu {
                 for (int i = 0; i < choices.Count; i++) {
                     ControllerProfileInfo current = controllerSelector.Items[i] as ControllerProfileInfo;
                     if (current == null || current.ProfileId != choices[i].ProfileId ||
-                        current.DisplayName != choices[i].DisplayName) {
+                        current.DisplayName != choices[i].DisplayName ||
+                        current.IsConnected != choices[i].IsConnected ||
+                        current.ConnectionSequence != choices[i].ConnectionSequence) {
                         changed = true;
                         break;
                     }
@@ -652,6 +837,7 @@ namespace BetterJoyForCemu {
 
             ControllerProfileInfo target = controllerSelector.Items.Cast<ControllerProfileInfo>()
                 .FirstOrDefault(p => p.ProfileId == targetId);
+            bool selectionChanged = selectedId != target?.ProfileId;
             controllerSelector.SelectedItem = target;
             if (target == null)
                 controllerSelector.SelectedIndex = -1;
@@ -659,7 +845,12 @@ namespace BetterJoyForCemu {
 
             newestControllerSequence = newest;
             initialControllerSelection = false;
-            ApplySelectedController();
+            // The local hardware refresh timer runs twice a second. Reapplying the whole profile
+            // on an unchanged snapshot resets open option ComboBoxes and steals their interaction
+            // mid-selection. Only refresh controls when the available profiles or selection
+            // genuinely changed; individual edits already update their own controls immediately.
+            if (wasInitialSelection || changed || selectionChanged)
+                ApplySelectedController();
         }
 
         private void ControllerSelector_SelectedIndexChanged(object sender, EventArgs e) {
@@ -679,6 +870,7 @@ namespace BetterJoyForCemu {
             }
             btn_apply.Enabled = hasController;
             gameControllersButton.Enabled = hasController;
+            LoadProfileOptions(hasController);
             UpdateProfilePresentation(selected);
         }
 
@@ -697,13 +889,22 @@ namespace BetterJoyForCemu {
 
             if (selected.IsConnected) {
                 SetProfileStatus("Connected", ProfileConnected);
+                string useAs = ControllerMappings.OptionValue(selected.ProfileId, "UseAs");
                 if (virtualControllerNameLabel != null)
-                    virtualControllerNameLabel.Text = ConfiguredVirtualControllerName();
-                if (virtualControllerDetailLabel != null)
-                    virtualControllerDetailLabel.Text =
-                        "Connected to " + selected.DisplayName + ". Open Windows properties to test its inputs.";
-                if (gameControllersButton != null)
-                    gameControllersButton.Text = "Open controller properties...";
+                    virtualControllerNameLabel.Text = ConfiguredVirtualControllerName(selected.ProfileId);
+                if (useAs == ControllerMappings.UseAsNone) {
+                    if (virtualControllerDetailLabel != null)
+                        virtualControllerDetailLabel.Text =
+                            "This profile is connected without a virtual game controller output.";
+                    if (gameControllersButton != null)
+                        gameControllersButton.Text = "Open Game Controllers...";
+                } else {
+                    if (virtualControllerDetailLabel != null)
+                        virtualControllerDetailLabel.Text =
+                            "Connected to " + selected.DisplayName + ". Open Windows properties to test its inputs.";
+                    if (gameControllersButton != null)
+                        gameControllersButton.Text = "Open controller properties...";
+                }
             } else {
                 SetProfileStatus("Disconnected", ProfileMuted);
                 if (virtualControllerNameLabel != null)
@@ -727,14 +928,11 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private static string ConfiguredVirtualControllerName() {
-            bool showAsXbox;
-            bool showAsDs4;
-            Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsXInput"], out showAsXbox);
-            Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsDS4"], out showAsDs4);
-            if (showAsXbox)
+        private static string ConfiguredVirtualControllerName(string profileId) {
+            string useAs = ControllerMappings.OptionValue(profileId, "UseAs");
+            if (useAs == ControllerMappings.UseAsXbox360)
                 return "Xbox 360 virtual controller";
-            if (showAsDs4)
+            if (useAs == ControllerMappings.UseAsDualShock4)
                 return "DualShock 4 virtual controller";
             return "Virtual controller output disabled";
         }
@@ -776,17 +974,16 @@ namespace BetterJoyForCemu {
                     ordinal = LocalVirtualControllerOrdinal(selected.ProfileId, false);
                 }
             } else {
-                bool hasXboxOutput;
-                bool hasDs4Output;
-                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsXInput"], out hasXboxOutput);
-                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsDS4"], out hasDs4Output);
-                if (!hasXboxOutput && !hasDs4Output)
+                string useAs = ControllerMappings.OptionValue(selected.ProfileId, "UseAs");
+                if (useAs == ControllerMappings.UseAsNone)
                     return false;
 
-                controllerType = hasXboxOutput
+                controllerType = useAs == ControllerMappings.UseAsXbox360
                     ? VirtualGameControllerType.Xbox360
                     : VirtualGameControllerType.DualShock4;
                 ordinal = remoteProfiles
+                    .Where(profile => ControllerMappings.OptionValue(
+                        profile.ProfileId, "UseAs") == useAs)
                     .OrderBy(profile => profile.ConnectionSequence)
                     .Select(profile => profile.ProfileId)
                     .ToList()
@@ -1155,6 +1352,8 @@ namespace BetterJoyForCemu {
 
         private void btn_apply_Click(object sender, EventArgs e) {
             ControllerMappings.Save();
+            if (serviceClient == null)
+                Program.mgr?.ApplyControllerProfileOptions();
         }
 
         private void btn_close_Click(object sender, EventArgs e) {

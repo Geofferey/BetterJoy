@@ -71,7 +71,7 @@ namespace BetterJoyForCemu {
                             // virtualControllerSequence. The older one is the one most likely
                             // already locked onto by a running game, so it's left untouched; the
                             // newer one is safe to actually disconnect (matching a real unplug)
-                            // and recreate later on split via ReenableViGEm.
+                            // and recreate later from each solo profile.
                             Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
                             if (loser.out_xbox != null) {
                                 try { loser.out_xbox.Disconnect(); } catch { }
@@ -86,37 +86,12 @@ namespace BetterJoyForCemu {
                     }
                 }
             } else if (v.other != null && !v.isPro) {
-                // Recreates whichever controller was actually disconnected on join (see above) -
-                // a no-op for whichever one was never touched, since ReenableViGEm only acts
-                // when out_xbox/out_ds4 is null.
-                ReenableViGEm(v);
-                ReenableViGEm(v.other);
-
                 v.other.other = null;
                 v.other = null;
             }
 
+            Program.mgr.ApplyControllerProfileOptions();
             BroadcastSnapshot();
-        }
-
-        private void ReenableViGEm(Joycon v) {
-            bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
-            bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
-            bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
-
-            if (showAsXInput && v.out_xbox == null) {
-                v.out_xbox = new Controller.OutputControllerXbox360();
-                if (toRumble)
-                    v.out_xbox.FeedbackReceived += v.ReceiveRumble;
-                v.out_xbox.Connect();
-            }
-
-            if (showAsDS4 && v.out_ds4 == null) {
-                v.out_ds4 = new Controller.OutputControllerDualShock4();
-                if (toRumble)
-                    v.out_ds4.FeedbackReceived += v.Ds4_FeedbackReceived;
-                v.out_ds4.Connect();
-            }
         }
 
         // ---------------------------------------------------------------------------------
@@ -897,6 +872,7 @@ namespace BetterJoyForCemu {
                 // directly - rebuilding them (Clear()+AddRange()) outside the scan lock could
                 // race that iteration. See JoyconManager.RunExclusiveOfScanning.
                 Program.mgr?.RunExclusiveOfScanning(_3rdPartyControllers.LoadIntoProgramLists);
+                Program.mgr?.ApplyControllerProfileOptions();
 
                 AppendTextBox("Reloaded shared configuration after a change.");
             } catch (Exception ex) {

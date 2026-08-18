@@ -99,7 +99,7 @@ namespace BetterJoyForCemu.Controller {
 		}
 
 		private void FeedbackReceivedRcv(object _sender, DualShock4FeedbackReceivedEventArgs e) {
-			// No subscriber when ShowAsDS4=true but EnableRumble=false (Joycon.cs deliberately
+			// No subscriber when a profile uses DS4 output but EnableRumble=false (Joycon.cs deliberately
 			// doesn't wire one up in that case) - a game sending a DS4 output report would
 			// otherwise NullReferenceException here. The Xbox360 wrapper already guards this.
 			FeedbackReceived?.Invoke(e);

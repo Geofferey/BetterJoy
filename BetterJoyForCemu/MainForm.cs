@@ -26,6 +26,12 @@ namespace BetterJoyForCemu {
         private Timer clickTimer;
         private readonly DesktopInputBackend desktopInput;
         private readonly string[] displayedConfigKeys;
+        private static readonly HashSet<string> ProfileOwnedConfigKeys =
+            new HashSet<string>(StringComparer.Ordinal) {
+                "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
+                "HomeLongPowerOff", "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY",
+                "HomeLEDOn",
+            };
 
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
@@ -80,7 +86,7 @@ namespace BetterJoyForCemu {
             // key in App.config only as a one-time compatibility hint for legacy mappings; it is
             // no longer a runtime setting and should not be editable here.
             displayedConfigKeys = ConfigurationManager.AppSettings.AllKeys
-                .Where(key => key != "GyroToJoyOrMouse")
+                .Where(key => key != "GyroToJoyOrMouse" && !ProfileOwnedConfigKeys.Contains(key))
                 .ToArray();
             Size childSize = new Size(150, 20);
             for (int i = 0; i != displayedConfigKeys.Length; i++) {
@@ -530,10 +536,6 @@ namespace BetterJoyForCemu {
             // WireServiceClientEvents) - not cleared immediately here, unlike local mode.
         }
 
-        bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
-        bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
-        bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
-
         public async void locBtnClickAsync(object sender, EventArgs e) {
             Button bb = sender as Button;
 
@@ -889,7 +891,7 @@ namespace BetterJoyForCemu {
                             // click. The older one is the one most likely already locked onto by
                             // a running game, so it's left completely untouched; the newer one is
                             // safe to actually disconnect (matching a real unplug - clean, no
-                            // leftover state) and recreate later on split via ReenableViGEm.
+                            // leftover state) and recreate later from each solo profile.
                             Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
                             if (loser.out_xbox != null) {
                                 loser.out_xbox.Disconnect();
@@ -912,13 +914,9 @@ namespace BetterJoyForCemu {
                     foreach (Button b in con) // a real pair is already handled above
                         if (b.Tag == v)
                             b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
+                if (succ)
+                    Program.mgr.ApplyControllerProfileOptions();
             } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
-                // Recreates whichever controller was actually disconnected on join (see above) -
-                // a no-op for whichever one was never touched, since ReenableViGEm only acts
-                // when out_xbox/out_ds4 is null.
-                ReenableViGEm(v);
-                ReenableViGEm(v.other);
-
                 Joycon partner = v.other;
                 bool wasRealPair = partner != v;
 
@@ -930,6 +928,7 @@ namespace BetterJoyForCemu {
 
                 v.other.other = null;
                 v.other = null;
+                Program.mgr.ApplyControllerProfileOptions();
 
                 if (wasRealPair) {
                     Bitmap soloIcon = partner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
@@ -967,7 +966,7 @@ namespace BetterJoyForCemu {
                 AppendTextBox("Error writing app settings.\r\n");
             }
 
-            ConfigurationManager.AppSettings["AutoPowerOff"] = "false";  // Prevent joycons poweroff when applying settings
+            Program.suppressAutoPowerOffOnExit = true;
             Application.Restart();
             Environment.Exit(0);
         }
@@ -1007,24 +1006,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-        void ReenableViGEm(Joycon v) {
-            if (showAsXInput && v.out_xbox == null) {
-                v.out_xbox = new Controller.OutputControllerXbox360();
-
-                if (toRumble)
-                    v.out_xbox.FeedbackReceived += v.ReceiveRumble;
-                v.out_xbox.Connect();
-            }
-
-            if (showAsDS4 && v.out_ds4 == null) {
-                v.out_ds4 = new Controller.OutputControllerDualShock4();
-
-                if (toRumble)
-                    v.out_ds4.FeedbackReceived += v.Ds4_FeedbackReceived;
-                v.out_ds4.Connect();
-            }
-        }
-
         private void btn_settings_Click(object sender, EventArgs e) {
             rightPanel.Visible = !rightPanel.Visible;
         }
@@ -1044,17 +1025,6 @@ namespace BetterJoyForCemu {
                     settings[KeyCtl].Value = ((ComboBox)valCtl).SelectedItem.ToString();
                 } else if (valCtl.GetType() == typeof(TextBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((TextBox)valCtl).Text.ToLower();
-                }
-
-                // Program.mgr is null in remote mode (Program.Start() never ran there) - the
-                // value is still saved to the config file either way (see above), so a synced
-                // service picks it up for its own newly-connecting controllers via its file
-                // watcher; there just isn't a live Joycon list here to apply it to immediately.
-                if (KeyCtl == "HomeLEDOn" && Program.mgr != null) {
-                    bool on = settings[KeyCtl].Value.ToLower() == "true";
-                    foreach (Joycon j in Program.mgr.j) {
-                        j.SetHomeLight(on);
-                    }
                 }
 
                 configFile.Save(ConfigurationSaveMode.Modified);

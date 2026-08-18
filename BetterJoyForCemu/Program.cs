@@ -253,22 +253,76 @@ namespace BetterJoyForCemu {
             CreateOutputControllers(jc);
         }
 
-        // Shared by AssignPadId and CleanUp's survivor-restore, both of which need a freshly
-        // Connect()ed virtual controller built from the same config-driven settings. No-op for
-        // whichever half(s) already have one.
+        // Shared by attach, profile changes, AssignPadId, and survivor restoration. Reconciles
+        // both directions: changing a profile from Xbox to DS4/Disabled removes the old target,
+        // while enabling an output creates and connects the requested target.
         void CreateOutputControllers(Joycon jc) {
-            if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]) && jc.out_xbox == null) {
+            string useAs = ControllerMappings.OptionValue(
+                ControllerMappings.ProfileIdFor(jc), "UseAs");
+            bool useXbox = useAs == ControllerMappings.UseAsXbox360;
+            bool useDs4 = useAs == ControllerMappings.UseAsDualShock4;
+
+            if (!useXbox && jc.out_xbox != null) {
+                try { jc.out_xbox.Disconnect(); } catch { }
+                jc.out_xbox = null;
+            }
+            if (!useDs4 && jc.out_ds4 != null) {
+                try { jc.out_ds4.Disconnect(); } catch { }
+                jc.out_ds4 = null;
+            }
+
+            if ((useXbox || useDs4) && !Program.EnsureVigemClient())
+                return;
+
+            if (useXbox && jc.out_xbox == null) {
                 jc.out_xbox = new Controller.OutputControllerXbox360();
                 if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
                     jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
                 jc.out_xbox.Connect();
             }
-            if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]) && jc.out_ds4 == null) {
+            if (useDs4 && jc.out_ds4 == null) {
                 jc.out_ds4 = new Controller.OutputControllerDualShock4();
                 if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
                     jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
                 jc.out_ds4.Connect();
             }
+        }
+
+        public void ApplyControllerProfileOptions() {
+            RunExclusiveOfScanning(() => {
+                var handledProfiles = new HashSet<string>(StringComparer.Ordinal);
+                foreach (Joycon jc in j) {
+                    if (jc.state == Joycon.state_.DROPPED)
+                        continue;
+                    string profileId = ControllerMappings.ProfileIdFor(jc);
+                    jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+                    if (!handledProfiles.Add(profileId))
+                        continue;
+
+                    bool paired = jc.other != null && jc.other != jc;
+                    Joycon active = jc;
+                    Joycon passive = null;
+                    if (paired) {
+                        bool jcHasOutput = jc.out_xbox != null || jc.out_ds4 != null;
+                        bool otherHasOutput = jc.other.out_xbox != null || jc.other.out_ds4 != null;
+                        active = jcHasOutput || !otherHasOutput ? jc : jc.other;
+                        passive = active == jc ? jc.other : jc;
+                    }
+
+                    if (passive != null) {
+                        if (passive.out_xbox != null) {
+                            try { passive.out_xbox.Disconnect(); } catch { }
+                            passive.out_xbox = null;
+                        }
+                        if (passive.out_ds4 != null) {
+                            try { passive.out_ds4.Disconnect(); } catch { }
+                            passive.out_ds4 = null;
+                        }
+                    }
+                    CreateOutputControllers(active);
+                }
+                form.RefreshControllerState();
+            });
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
@@ -544,14 +598,8 @@ namespace BetterJoyForCemu {
             // to connect second kept showing its own solo player number instead of the pair's,
             // and the pair's virtual controller didn't actually work in games afterward even
             // though it looked fine in joy.cpl.
-            bool on = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None).AppSettings.Settings["HomeLEDOn"].Value.ToLower() == "true";
             foreach (Joycon jc in j) { // Connect device straight away
                 if (jc.state == Joycon.state_.NOT_ATTACHED) {
-                    if (jc.out_xbox != null)
-                        jc.out_xbox.Connect();
-                    if (jc.out_ds4 != null)
-                        jc.out_ds4.Connect();
-
                     try {
                         jc.Attach();
                     } catch (Exception) {
@@ -565,7 +613,9 @@ namespace BetterJoyForCemu {
                     // temporary HID-path identity sent when the slot was first discovered.
                     form.RefreshControllerState();
 
-                    jc.SetHomeLight(on);
+                    CreateOutputControllers(jc);
+                    string profileId = ControllerMappings.ProfileIdFor(jc);
+                    jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
 
                     jc.Begin();
                     if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
@@ -616,12 +666,14 @@ namespace BetterJoyForCemu {
                         temp = null;    // repeat
                     }
                 }
+                ApplyControllerProfileOptions();
             }
         }
 
         public void OnApplicationQuit() {
             foreach (Joycon v in j) {
-                if (Boolean.Parse(ConfigurationManager.AppSettings["AutoPowerOff"]))
+                if (!Program.suppressAutoPowerOffOnExit && ControllerMappings.BoolOption(
+                    ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
                     v.PowerOff();
 
                 v.Detach();
@@ -651,10 +703,12 @@ namespace BetterJoyForCemu {
         public static UdpServer server;
 
         public static ViGEmClient emClient;
+        private static readonly object emClientLock = new object();
 
         private static readonly HttpClient client = new HttpClient();
 
         public static JoyconManager mgr;
+        public static bool suppressAutoPowerOffOnExit;
 
         static IJoyconHost form;
 
@@ -680,6 +734,23 @@ namespace BetterJoyForCemu {
 
         private static WindowsInput.Events.Sources.IKeyboardEventSource keyboard;
         private static WindowsInput.Events.Sources.IMouseEventSource mouse;
+
+        public static bool EnsureVigemClient() {
+            if (emClient != null)
+                return true;
+            lock (emClientLock) {
+                if (emClient != null)
+                    return true;
+                try {
+                    emClient = new ViGEmClient();
+                    return true;
+                } catch (Nefarius.ViGEm.Client.Exceptions.VigemBusNotFoundException) {
+                    form?.AppendTextBox(
+                        "Could not start VigemBus. Make sure drivers are installed correctly.\r\n");
+                    return false;
+                }
+            }
+        }
 
         public static void Start() {
             // Previously only ever called from MainForm_Load, so a Windows Service (which never
@@ -709,13 +780,8 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            if (Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]) || Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"])) {
-                try {
-                    emClient = new ViGEmClient(); // Manages emulated XInput
-                } catch (Nefarius.ViGEm.Client.Exceptions.VigemBusNotFoundException) {
-                    form.AppendTextBox("Could not start VigemBus. Make sure drivers are installed correctly.\r\n");
-                }
-            }
+            if (ControllerMappings.AnyVirtualOutputEnabled())
+                EnsureVigemClient();
 
             foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces()) {
                 // Get local BT host MAC

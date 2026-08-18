@@ -41,12 +41,26 @@ namespace BetterJoyForCemu {
             "center_click", "scroll_up", "scroll_down", "clench_gyro",
         };
 
+        // Profile-owned behavior which historically lived in App.config. App.config remains the
+        // migration/default source for profiles without an explicit option, but these values are
+        // persisted beside bindings once a profile is edited.
+        public static readonly string[] OptionKeys = {
+            "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
+            "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
+        };
+
+        public const string UseAsXbox360 = "xbox360";
+        public const string UseAsDualShock4 = "dualshock4";
+        public const string UseAsNone = "none";
+
         private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string>(StringComparer.Ordinal) {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
             "clench_gyro",
         };
 
         private static readonly HashSet<string> KnownKeys = new HashSet<string>(Keys, StringComparer.Ordinal);
+        private static readonly HashSet<string> KnownOptionKeys =
+            new HashSet<string>(OptionKeys, StringComparer.Ordinal);
         private static readonly HashSet<string> GyroActivationKeys = new HashSet<string>(StringComparer.Ordinal) {
             "active_gyro_mouse", "active_gyro_left_stick", "active_gyro_right_stick",
         };
@@ -92,14 +106,69 @@ namespace BetterJoyForCemu {
                 Dictionary<string, string> profile;
                 if (!next.TryGetValue(profileId, out profile)) {
                     profile = new Dictionary<string, string>(StringComparer.Ordinal);
-                    foreach (string knownKey in Keys)
-                        profile[knownKey] = LegacyValue(knownKey);
                     next[profileId] = profile;
                 }
 
+                SnapshotMissingProfileValues(profile);
                 profile[key] = String.IsNullOrEmpty(value) ? "0" : value;
                 profiles = next;
             }
+        }
+
+        public static string OptionValue(string profileId, string key) {
+            if (!KnownOptionKeys.Contains(key))
+                throw new ArgumentException("Unknown controller profile option: " + key, nameof(key));
+
+            EnsureLoaded();
+            Dictionary<string, Dictionary<string, string>> snapshot = profiles;
+            Dictionary<string, string> profile;
+            string value;
+            if (!String.IsNullOrEmpty(profileId) &&
+                snapshot.TryGetValue(profileId, out profile) &&
+                profile.TryGetValue(key, out value))
+                return value;
+            return LegacyOptionValue(key);
+        }
+
+        public static bool BoolOption(string profileId, string key) {
+            bool value;
+            return Boolean.TryParse(OptionValue(profileId, key), out value) && value;
+        }
+
+        public static int IntOption(string profileId, string key, int fallback = -1) {
+            int value;
+            return Int32.TryParse(OptionValue(profileId, key), out value) ? value : fallback;
+        }
+
+        public static void SetOptionValue(string profileId, string key, string value) {
+            if (String.IsNullOrEmpty(profileId))
+                throw new ArgumentException("A controller profile is required.", nameof(profileId));
+            if (!KnownOptionKeys.Contains(key))
+                throw new ArgumentException("Unknown controller profile option: " + key, nameof(key));
+
+            EnsureLoaded();
+            lock (writeLock) {
+                var next = CloneProfiles(profiles);
+                Dictionary<string, string> profile;
+                if (!next.TryGetValue(profileId, out profile)) {
+                    profile = new Dictionary<string, string>(StringComparer.Ordinal);
+                    next[profileId] = profile;
+                }
+
+                SnapshotMissingProfileValues(profile);
+                profile[key] = value ?? LegacyOptionValue(key);
+                profiles = next;
+            }
+        }
+
+        public static bool AnyVirtualOutputEnabled() {
+            EnsureLoaded();
+            if (LegacyOptionValue("UseAs") != UseAsNone)
+                return true;
+            return profiles.Values.Any(profile => {
+                string value;
+                return profile.TryGetValue("UseAs", out value) && value != UseAsNone;
+            });
         }
 
         public static string DefaultValue(string key) {
@@ -111,13 +180,18 @@ namespace BetterJoyForCemu {
         public static void Save() {
             EnsureLoaded();
             lock (writeLock) {
-                var root = new XElement("controllerMappings", new XAttribute("version", "1"));
+                var root = new XElement("controllerMappings", new XAttribute("version", "2"));
                 foreach (KeyValuePair<string, Dictionary<string, string>> profile in profiles.OrderBy(p => p.Key, StringComparer.Ordinal)) {
                     var profileElement = new XElement("profile", new XAttribute("id", profile.Key));
                     foreach (string key in Keys) {
                         string value;
                         if (profile.Value.TryGetValue(key, out value))
                             profileElement.Add(new XElement("bind", new XAttribute("key", key), new XAttribute("value", value ?? "0")));
+                    }
+                    foreach (string key in OptionKeys) {
+                        string value;
+                        if (profile.Value.TryGetValue(key, out value))
+                            profileElement.Add(new XElement("option", new XAttribute("key", key), new XAttribute("value", value ?? String.Empty)));
                     }
                     root.Add(profileElement);
                 }
@@ -167,6 +241,12 @@ namespace BetterJoyForCemu {
                         string key = (string)bindElement.Attribute("key");
                         string value = (string)bindElement.Attribute("value");
                         if (KnownKeys.Contains(key) && value != null)
+                            values[key] = value;
+                    }
+                    foreach (XElement optionElement in profileElement.Elements("option")) {
+                        string key = (string)optionElement.Attribute("key");
+                        string value = (string)optionElement.Attribute("value");
+                        if (KnownOptionKeys.Contains(key) && value != null)
                             values[key] = value;
                     }
                     parsed[profileId] = values;
@@ -309,6 +389,32 @@ namespace BetterJoyForCemu {
                 ? ConfigurationManager.AppSettings[key]
                 : Config.Value(key);
             return String.IsNullOrEmpty(value) ? "0" : value;
+        }
+
+        private static string LegacyOptionValue(string key) {
+            if (key == "UseAs") {
+                bool showAsXbox;
+                bool showAsDs4;
+                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsXInput"], out showAsXbox);
+                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsDS4"], out showAsDs4);
+                return showAsXbox
+                    ? UseAsXbox360
+                    : (showAsDs4 ? UseAsDualShock4 : UseAsNone);
+            }
+
+            string value = ConfigurationManager.AppSettings[key];
+            return value ?? String.Empty;
+        }
+
+        private static void SnapshotMissingProfileValues(Dictionary<string, string> profile) {
+            foreach (string key in Keys) {
+                if (!profile.ContainsKey(key))
+                    profile[key] = LegacyValue(key);
+            }
+            foreach (string key in OptionKeys) {
+                if (!profile.ContainsKey(key))
+                    profile[key] = LegacyOptionValue(key);
+            }
         }
 
         private static string LegacyGyroActivationValue(string key) {

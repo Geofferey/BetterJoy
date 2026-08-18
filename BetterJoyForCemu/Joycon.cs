@@ -111,6 +111,18 @@ namespace BetterJoyForCemu {
             return ControllerMappings.Value(mappingProfileId, key);
         }
 
+        private bool ProfileBoolOption(string key) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+            return ControllerMappings.BoolOption(mappingProfileId, key);
+        }
+
+        private int ProfileIntOption(string key, int fallback = -1) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+            return ControllerMappings.IntOption(mappingProfileId, key, fallback);
+        }
+
         // Join/split changes which mapping profile this physical half belongs to. Release any
         // synthetic holds under the old profile before changing topology; otherwise pressing an
         // SL/SR mouse/key bind while joined and releasing it after a split would look up the new
@@ -152,7 +164,7 @@ namespace BetterJoyForCemu {
             // (PrepareForMappingProfileChange) clears it right after this returns.
             Simulate(mapping, click: false, up: true);
 
-            if (dragToggle) {
+            if (ProfileBoolOption("DragToggle")) {
                 foreach (string part in mapping.Split('+')) {
                     int code;
                     if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
@@ -213,7 +225,7 @@ namespace BetterJoyForCemu {
 
             bool wasEnabled = toggledActive;
             bool comboHeld = IsComboHeld(mapping);
-            if (GyroHoldToggle) {
+            if (ProfileBoolOption("GyroHoldToggle")) {
                 toggledActive = comboHeld;
             } else if (comboHeld && !previousComboHeld) {
                 toggledActive = !toggledActive;
@@ -543,11 +555,6 @@ namespace BetterJoyForCemu {
         int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
-        bool toRumble = Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]);
-
-        bool showAsXInput = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsXInput"]);
-        bool showAsDS4 = Boolean.Parse(ConfigurationManager.AppSettings["ShowAsDS4"]);
-
         public IJoyconHost form;
 
         public byte LED { get; private set; } = 0x0;
@@ -617,17 +624,10 @@ namespace BetterJoyForCemu {
 
             connection = isUSB ? 0x01 : 0x02;
 
-            if (showAsXInput) {
-                out_xbox = new OutputControllerXbox360();
-                if (toRumble)
-                    out_xbox.FeedbackReceived += ReceiveRumble;
-            }
-
-            if (showAsDS4) {
-                out_ds4 = new OutputControllerDualShock4();
-                if (toRumble)
-                    out_ds4.FeedbackReceived += Ds4_FeedbackReceived;
-            }
+            // Virtual output is created after Attach resolves the controller's durable profile
+            // identity (see JoyconManager.CreateOutputControllers). Creating it here used only
+            // the old global ShowAs settings and was too early for USB devices whose real MAC is
+            // learned during the handshake.
         }
 
         public void getActiveData() {
@@ -1017,7 +1017,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-        bool dragToggle = Boolean.Parse(ConfigurationManager.AppSettings["DragToggle"]);
         // ConcurrentDictionary, not plain Dictionary: PrepareForMappingProfileChange (join/split
         // thread) calls Clear() on this while the poll thread concurrently reads/writes it via
         // Simulate() - a plain Dictionary under that access pattern can throw or corrupt its
@@ -1046,7 +1045,7 @@ namespace BetterJoyForCemu {
                     if (click) {
                         form.SimulateButtonClick(button);
                     } else {
-                        if (dragToggle) {
+                        if (ProfileBoolOption("DragToggle")) {
                             if (!up) {
                                 bool release;
                                 mouse_toggle_btn.TryGetValue(button, out release);
@@ -1079,9 +1078,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-        bool HomeLongPowerOff = Boolean.Parse(ConfigurationManager.AppSettings["HomeLongPowerOff"]);
-        long PowerOffInactivityMins = Int32.Parse(ConfigurationManager.AppSettings["PowerOffInactivity"]);
-
         bool ChangeOrientationDoubleClick = Boolean.Parse(ConfigurationManager.AppSettings["ChangeOrientationDoubleClick"]);
         long lastDoubleClick = -1;
 
@@ -1105,7 +1101,6 @@ namespace BetterJoyForCemu {
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
         float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
         float GyroStickReduction = float.Parse(ConfigurationManager.AppSettings["GyroStickReduction"]);
-        bool GyroHoldToggle = Boolean.Parse(ConfigurationManager.AppSettings["GyroHoldToggle"]);
         bool GyroAnalogSliders = Boolean.Parse(ConfigurationManager.AppSettings["GyroAnalogSliders"]);
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
@@ -1139,7 +1134,7 @@ namespace BetterJoyForCemu {
             int powerOffButton = (int)((isPro || !isLeft || other != null) ? Button.HOME : Button.CAPTURE);
 
             long timestamp = Stopwatch.GetTimestamp();
-            if (HomeLongPowerOff && buttons[powerOffButton]) {
+            if (ProfileBoolOption("HomeLongPowerOff") && buttons[powerOffButton]) {
                 if ((timestamp - buttons_down_timestamp[powerOffButton]) / 10000 > 2000.0) {
                     if (other != null)
                         other.PowerOff();
@@ -1163,8 +1158,9 @@ namespace BetterJoyForCemu {
                 lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
             }
 
-            if (PowerOffInactivityMins > 0) {
-                if ((timestamp - inactivity) / 10000 > PowerOffInactivityMins * 60 * 1000) {
+            int powerOffInactivityMins = ProfileIntOption("PowerOffInactivity", -1);
+            if (powerOffInactivityMins > 0) {
+                if ((timestamp - inactivity) / 10000 > powerOffInactivityMins * 60 * 1000) {
                     if (other != null)
                         other.PowerOff();
 
@@ -2667,8 +2663,8 @@ namespace BetterJoyForCemu {
 
         public float[] otherStick = { 0, 0 };
 
-        bool swapAB = Boolean.Parse(ConfigurationManager.AppSettings["SwapAB"]);
-        bool swapXY = Boolean.Parse(ConfigurationManager.AppSettings["SwapXY"]);
+        bool swapAB => ProfileBoolOption("SwapAB");
+        bool swapXY => ProfileBoolOption("SwapXY");
         bool realn64Range = Boolean.Parse(ConfigurationManager.AppSettings["N64Range"]);
         float stickScalingFactor = float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]);
         float stickScalingFactor2 = float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]);
