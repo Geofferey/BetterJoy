@@ -243,7 +243,7 @@ namespace BetterJoyForCemu {
             this.rightPanel.Location = new System.Drawing.Point(289, 0);
             this.rightPanel.Margin = new System.Windows.Forms.Padding(2, 2, 12, 2);
             this.rightPanel.Name = "rightPanel";
-            this.rightPanel.Size = new System.Drawing.Size(312, 273);
+            this.rightPanel.Size = new System.Drawing.Size(312, 282);
             this.rightPanel.TabIndex = 11;
             this.rightPanel.Visible = false;
             //
@@ -251,7 +251,7 @@ namespace BetterJoyForCemu {
             //
             this.settingsApply.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
             this.settingsApply.Font = new System.Drawing.Font("Microsoft Sans Serif", 8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.settingsApply.Location = new System.Drawing.Point(246, 252);
+            this.settingsApply.Location = new System.Drawing.Point(246, 257);
             this.settingsApply.Margin = new System.Windows.Forms.Padding(2);
             this.settingsApply.Name = "settingsApply";
             this.settingsApply.Size = new System.Drawing.Size(61, 21);
@@ -264,7 +264,7 @@ namespace BetterJoyForCemu {
             //
             this.btn_enableServiceMode.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left)));
             this.btn_enableServiceMode.Font = new System.Drawing.Font("Microsoft Sans Serif", 8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.btn_enableServiceMode.Location = new System.Drawing.Point(3, 252);
+            this.btn_enableServiceMode.Location = new System.Drawing.Point(3, 257);
             this.btn_enableServiceMode.Margin = new System.Windows.Forms.Padding(2);
             this.btn_enableServiceMode.Name = "btn_enableServiceMode";
             this.btn_enableServiceMode.Size = new System.Drawing.Size(150, 21);
