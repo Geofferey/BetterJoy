@@ -16,6 +16,10 @@ namespace BetterJoyForCemu {
     // control panel: IDirectInputDevice8.RunControlPanel therefore stops at the joy.cpl list just
     // like the global call. We still use DirectInput enumeration to resolve the selected virtual
     // device's list position, then use Windows UI Automation to select it and invoke Properties.
+    //
+    // Integration debt: UI Automation is a best-effort compatibility bridge, not a supported
+    // joy.cpl API. Keep it isolated here and replace it if Windows or ViGEm exposes a stable way
+    // to address a controller's Properties page directly. OpenDefault remains the safe fallback.
     internal static class GameControllerControlPanel {
         private const uint DirectInputVersion = 0x0800;
         private const uint DeviceClassGameController = 4;
@@ -112,8 +116,15 @@ namespace BetterJoyForCemu {
             var automationThread = new Thread(() => {
                 // control.exe delegates to the Control Panel host, so its Process object is not a
                 // reliable way to find the resulting window. Locate the top-level UI by shape:
-                // joy.cpl has controller list items and a Properties button. This also works when
-                // Windows reuses an already-open Game Controllers window.
+                // joy.cpl has controller list items and an exact Properties command. This also
+                // works when Windows reuses an already-open Game Controllers window.
+                //
+                // Never automate our own process. Controller Profiles itself now contains an
+                // "Open controller properties..." button and a profile ComboBox. The former
+                // broad Contains("Properties") match mistook that pair for joy.cpl, selected the
+                // profile, focused this form, then invoked the same button recursively. Besides
+                // blocking joy.cpl, every new launcher thread repeated the foreground theft.
+                int currentProcessId = Process.GetCurrentProcess().Id;
                 for (int attempt = 0; attempt < 50; attempt++) {
                     Thread.Sleep(100);
                     try {
@@ -122,6 +133,9 @@ namespace BetterJoyForCemu {
                             new PropertyCondition(AutomationElement.ControlTypeProperty,
                                                   ControlType.Window));
                         foreach (AutomationElement window in windows) {
+                            if (window.Current.ProcessId == currentProcessId)
+                                continue;
+
                             AutomationElement propertiesButton = FindPropertiesButton(window);
                             if (propertiesButton == null)
                                 continue;
@@ -170,10 +184,16 @@ namespace BetterJoyForCemu {
                 new PropertyCondition(AutomationElement.ControlTypeProperty,
                                       ControlType.Button));
             foreach (AutomationElement button in buttons) {
-                if (Contains(button.Current.Name, "Properties"))
+                if (IsPropertiesCommand(button.Current.Name))
                     return button;
             }
             return null;
+        }
+
+        private static bool IsPropertiesCommand(string name) {
+            return name != null && String.Equals(
+                name.Replace("&", String.Empty).Trim().TrimEnd('.', '\u2026'),
+                "Properties", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsRequestedVirtualController(
