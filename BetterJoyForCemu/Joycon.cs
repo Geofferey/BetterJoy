@@ -55,7 +55,11 @@ namespace BetterJoyForCemu {
                 }
             }
         }
+        // Kept public for compatibility with existing callers; this is now specifically the
+        // activation latch for gyro-to-mouse. Stick outputs have independent latches below.
         public bool active_gyro = false;
+        private bool activeGyroLeftStick = false;
+        private bool activeGyroRightStick = false;
 
         // Real elapsed time since the last DoThingsWithButtons call, used to scale raw angular
         // velocity (gyr_g) into a per-packet rotation amount - previously a hardcoded 0.015f
@@ -67,10 +71,12 @@ namespace BetterJoyForCemu {
         // before the very first packet (e.g. right after connecting) can't produce a huge dt.
         private long lastDoThingsTimestamp = -1;
 
-        // Tracks the active_gyro combo's held state from the previous packet, so toggle mode
-        // (GyroHoldToggle == false) can flip on the rising edge only - the moment the combo
-        // first becomes fully held, not every packet it stays held.
-        private bool prevActiveGyroComboHeld = false;
+        // Each output tracks its own combo edge and toggle state. This lets the same profile use
+        // gyro mouse and either virtual stick independently (or at the same time).
+        private bool prevActiveGyroMouseComboHeld = false;
+        private bool prevActiveGyroLeftStickComboHeld = false;
+        private bool prevActiveGyroRightStickComboHeld = false;
+        private bool gyroMouseEnabledThisReport = false;
 
         // Same idea for reset_mouse - a one-shot action needs the rising edge only, or it would
         // keep re-centering every packet for as long as the bind stays held.
@@ -122,7 +128,14 @@ namespace BetterJoyForCemu {
             hasShaked = false;
             mouse_toggle_btn.Clear();
             active_gyro = false;
-            prevActiveGyroComboHeld = false;
+            activeGyroLeftStick = false;
+            activeGyroRightStick = false;
+            prevActiveGyroMouseComboHeld = false;
+            prevActiveGyroLeftStickComboHeld = false;
+            prevActiveGyroRightStickComboHeld = false;
+            gyroMouseEnabledThisReport = false;
+            gyroLeftStickActiveThisReport = false;
+            gyroRightStickActiveThisReport = false;
             prevResetMouseComboHeld = false;
             gyroMouseClenched = false;
         }
@@ -174,6 +187,42 @@ namespace BetterJoyForCemu {
             return true;
         }
 
+        // Gyro activation mappings have three explicit states:
+        //   always  - active without a bind
+        //   0       - disabled
+        //   combo   - controlled by the profile's hold/toggle preference
+        // The old unbound value is migrated to "always" by ControllerMappings, so 0 can safely
+        // mean disabled for every new output without unexpectedly enabling all three.
+        private bool UpdateGyroActivation(string key, ref bool toggledActive,
+                                           ref bool previousComboHeld,
+                                           out bool justEnabled) {
+            string mapping = MappingValue(key);
+            if (mapping == "always") {
+                toggledActive = false;
+                previousComboHeld = false;
+                justEnabled = false; // always-on has no activation edge to recenter on
+                return true;
+            }
+
+            if (String.IsNullOrEmpty(mapping) || mapping == "0") {
+                toggledActive = false;
+                previousComboHeld = false;
+                justEnabled = false;
+                return false;
+            }
+
+            bool wasEnabled = toggledActive;
+            bool comboHeld = IsComboHeld(mapping);
+            if (GyroHoldToggle) {
+                toggledActive = comboHeld;
+            } else if (comboHeld && !previousComboHeld) {
+                toggledActive = !toggledActive;
+            }
+            previousComboHeld = comboHeld;
+            justEnabled = !wasEnabled && toggledActive;
+            return toggledActive;
+        }
+
         // Rebuild only when a bind actually changes. ControllerMappings is live-reloaded by the
         // service watcher, so this also picks up remote edits without reconnecting the controller.
         private void RefreshGyroOnlyButtonReservations() {
@@ -216,15 +265,13 @@ namespace BetterJoyForCemu {
         }
 
         private bool OwnsGyroMouse() {
-            return extraGyroFeature == "mouse" &&
-                (isPro || other == null ||
+            return isPro || other == null || other == this ||
                  (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
-                    ? isLeft : !isLeft));
+                    ? isLeft : !isLeft);
         }
 
         private bool IsGyroMouseActive() {
-            return OwnsGyroMouse() &&
-                (MappingValue("active_gyro") == "0" || active_gyro);
+            return OwnsGyroMouse() && gyroMouseEnabledThisReport;
         }
 
         // A joined pair's ViGEm target stays on whichever half connected first, while gyro-mouse
@@ -1038,7 +1085,6 @@ namespace BetterJoyForCemu {
         bool ChangeOrientationDoubleClick = Boolean.Parse(ConfigurationManager.AppSettings["ChangeOrientationDoubleClick"]);
         long lastDoubleClick = -1;
 
-        string extraGyroFeature = ConfigurationManager.AppSettings["GyroToJoyOrMouse"];
         bool UseFilteredIMU = Boolean.Parse(ConfigurationManager.AppSettings["UseFilteredIMU"]);
         // TEMPORARY, for the figure-eight drift investigation (see CODE_REVIEW.md) - off by
         // default since the logging itself (file I/O every ~150ms while gyro-mouse is active) is
@@ -1172,28 +1218,27 @@ namespace BetterJoyForCemu {
                 : (float)((nowTimestamp - lastDoThingsTimestamp) / (double)Stopwatch.Frequency);
             lastDoThingsTimestamp = nowTimestamp;
 
-            // Evaluate activation before recentering so both features use the same state for this
-            // report. "0" means always enabled and therefore has no explicit inactive->active
-            // edge to center on. A real activation bind centers only when it turns gyro on, not
-            // when toggle mode turns it off or on every packet while hold mode remains held.
-            string activeGyroCombo = MappingValue("active_gyro");
-            bool gyroWasEnabled = activeGyroCombo == "0" || active_gyro;
-            if (activeGyroCombo != "0") {
-                bool comboHeld = IsComboHeld(activeGyroCombo);
-                if (GyroHoldToggle) {
-                    active_gyro = comboHeld;
-                } else if (comboHeld && !prevActiveGyroComboHeld) {
-                    active_gyro = !active_gyro;
-                }
-                prevActiveGyroComboHeld = comboHeld;
-            }
-            bool gyroEnabled = activeGyroCombo == "0" || active_gyro;
+            // Evaluate all three profile outputs independently. A real mouse activation edge
+            // recenters; Always Active intentionally has no edge, matching the old unbound
+            // activation behavior.
+            bool gyroMouseJustEnabled;
+            gyroMouseEnabledThisReport = UpdateGyroActivation(
+                "active_gyro_mouse", ref active_gyro,
+                ref prevActiveGyroMouseComboHeld, out gyroMouseJustEnabled);
+            bool ignoredActivationEdge;
+            gyroLeftStickActiveThisReport = UpdateGyroActivation(
+                "active_gyro_left_stick", ref activeGyroLeftStick,
+                ref prevActiveGyroLeftStickComboHeld, out ignoredActivationEdge);
+            gyroRightStickActiveThisReport = UpdateGyroActivation(
+                "active_gyro_right_stick", ref activeGyroRightStick,
+                ref prevActiveGyroRightStickComboHeld, out ignoredActivationEdge);
+            gyroStickReportDt = dt;
 
             RefreshGyroOnlyButtonReservations();
 
             bool ownsGyroMouse = OwnsGyroMouse();
-            bool gyroMouseActionsEnabled = ownsGyroMouse && gyroEnabled;
-            bool gyroMouseJustEnabled = ownsGyroMouse && !gyroWasEnabled && gyroEnabled;
+            bool gyroMouseActionsEnabled = ownsGyroMouse && gyroMouseEnabledThisReport;
+            gyroMouseJustEnabled = ownsGyroMouse && gyroMouseJustEnabled;
 
             string clenchGyroVal = MappingValue("clench_gyro");
             gyroMouseClenched = gyroMouseActionsEnabled && clenchGyroVal != "0" &&
@@ -1256,33 +1301,22 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            if (extraGyroFeature.Substring(0, 3) == "joy") {
-                float[] control_stick = (extraGyroFeature == "joy_left") ? stick : stick2;
-                float physicalX = control_stick[0];
-                float physicalY = control_stick[1];
-                float dx = 0.0f, dy = 0.0f;
+            if (!UseFilteredIMU &&
+                (gyroLeftStickActiveThisReport || gyroRightStickActiveThisReport)) {
+                float dx = GyroStickSensitivityX * (gyr_g.Z * dt); // yaw
+                float dy = -GyroStickSensitivityY * (gyr_g.Y * dt); // pitch
+                float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
+                float diagnosticPhysicalX = diagnosticStick[0];
+                float diagnosticPhysicalY = diagnosticStick[1];
 
-                gyroStickActiveThisReport = gyroEnabled;
-                gyroStickReportDt = dt;
+                if (gyroLeftStickActiveThisReport)
+                    ApplyGyroToStick(stick, dx, dy);
+                if (gyroRightStickActiveThisReport)
+                    ApplyGyroToStick(stick2, dx, dy);
 
-                if (gyroEnabled) {
-                    if (UseFilteredIMU) {
-                        // The filtered path is applied after all three IMU sub-samples have been
-                        // consumed by ProcessGyroStickSample. Leave the physical stick untouched
-                        // here so the report-level flush has a clean base value.
-                    } else {
-                        dx = (GyroStickSensitivityX * (gyr_g.Z * dt)); // yaw
-                        dy = -(GyroStickSensitivityY * (gyr_g.Y * dt)); // pitch
-
-                        float stickReduction = EffectiveGyroStickReduction();
-                        control_stick[0] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[0] / stickReduction + dx));
-                        control_stick[1] = Math.Max(-1.0f, Math.Min(1.0f, control_stick[1] / stickReduction + dy));
-                    }
-                }
-
-                if (!UseFilteredIMU)
-                    CaptureGyroStickDiagnosticOutput(gyroEnabled, dt, physicalX, physicalY,
-                                                      dx, dy, control_stick[0], control_stick[1]);
+                CaptureGyroStickDiagnosticOutput(true, dt,
+                    diagnosticPhysicalX, diagnosticPhysicalY, dx, dy,
+                    diagnosticStick[0], diagnosticStick[1]);
             }
 
             // Movement itself is applied per IMU sub-sample in ProcessGyroMouseSample. Reconcile
@@ -1357,7 +1391,8 @@ namespace BetterJoyForCemu {
         // other. Fusion determines the gravity-relative axes; only gyro rate creates output.
         private readonly GyroMousePlayerSpace gyroStickPlayerSpace = new GyroMousePlayerSpace();
         private float pendingGyroStickDx, pendingGyroStickDy;
-        private bool gyroStickActiveThisReport;
+        private bool gyroLeftStickActiveThisReport;
+        private bool gyroRightStickActiveThisReport;
         private float gyroStickReportDt;
 
         // Smooth mapped 2D motion, not the raw 3D sensor. The filtered state is blended back
@@ -1399,6 +1434,7 @@ namespace BetterJoyForCemu {
         private Vector3 gyroStickDiagFirstLegacyAccel;
         private float gyroStickDiagDt;
         private bool gyroStickDiagActive;
+        private string gyroStickDiagTarget = "none";
         private float gyroStickDiagPhysicalX, gyroStickDiagPhysicalY;
         private float gyroStickDiagAppliedDx, gyroStickDiagAppliedDy;
         private float gyroStickDiagOutputX, gyroStickDiagOutputY;
@@ -1406,8 +1442,18 @@ namespace BetterJoyForCemu {
         private float gyroStickDiagPitchDelta, gyroStickDiagYawDelta, gyroStickDiagRollDelta;
 
         private bool IsGyroStickConfigured() {
-            return extraGyroFeature != null &&
-                extraGyroFeature.StartsWith("joy", StringComparison.Ordinal);
+            return MappingValue("active_gyro_left_stick") != "0" ||
+                   MappingValue("active_gyro_right_stick") != "0";
+        }
+
+        private string GyroStickDiagnosticTarget() {
+            if (gyroLeftStickActiveThisReport && gyroRightStickActiveThisReport)
+                return "joy_both";
+            if (gyroLeftStickActiveThisReport)
+                return "joy_left";
+            if (gyroRightStickActiveThisReport)
+                return "joy_right";
+            return "none";
         }
 
         private void BeginGyroStickDiagnosticReport() {
@@ -1425,6 +1471,7 @@ namespace BetterJoyForCemu {
             gyroStickDiagFirstLegacyAccel = Vector3.Zero;
             gyroStickDiagDt = 0.0f;
             gyroStickDiagActive = false;
+            gyroStickDiagTarget = "none";
             gyroStickDiagPhysicalX = gyroStickDiagPhysicalY = 0.0f;
             gyroStickDiagAppliedDx = gyroStickDiagAppliedDy = 0.0f;
             gyroStickDiagOutputX = gyroStickDiagOutputY = 0.0f;
@@ -1459,6 +1506,7 @@ namespace BetterJoyForCemu {
                 return;
 
             gyroStickDiagActive = gyroEnabled;
+            gyroStickDiagTarget = GyroStickDiagnosticTarget();
             gyroStickDiagDt = dt;
             gyroStickDiagPhysicalX = physicalX;
             gyroStickDiagPhysicalY = physicalY;
@@ -1583,7 +1631,7 @@ namespace BetterJoyForCemu {
                 PadId.ToString(CultureInfo.InvariantCulture),
                 virtualControllerSequence.ToString(CultureInfo.InvariantCulture),
                 submit,
-                extraGyroFeature,
+                gyroStickDiagTarget,
                 gyroStickDiagActive ? "1" : "0",
                 UseFilteredIMU ? "1" : "0",
                 GyroStickCsv(AHRS.Beta),
@@ -2254,7 +2302,8 @@ namespace BetterJoyForCemu {
 
         private void ResetGyroStickMotionState(bool resetPlayerSpace = false) {
             pendingGyroStickDx = pendingGyroStickDy = 0.0f;
-            gyroStickActiveThisReport = false;
+            gyroLeftStickActiveThisReport = false;
+            gyroRightStickActiveThisReport = false;
             if (resetPlayerSpace)
                 gyroStickPlayerSpace.Reset();
         }
@@ -2268,6 +2317,14 @@ namespace BetterJoyForCemu {
                    !float.IsInfinity(GyroStickReduction)
                 ? GyroStickReduction
                 : 1.0f;
+        }
+
+        private void ApplyGyroToStick(float[] controlStick, float dx, float dy) {
+            float stickReduction = EffectiveGyroStickReduction();
+            controlStick[0] = Math.Max(-1.0f, Math.Min(1.0f,
+                controlStick[0] / stickReduction + dx));
+            controlStick[1] = Math.Max(-1.0f, Math.Min(1.0f,
+                controlStick[1] / stickReduction + dy));
         }
 
         // Filtered gyro-stick consumes the same canonical IMU frame and gravity-relative rate
@@ -2291,7 +2348,9 @@ namespace BetterJoyForCemu {
             // no stale-frame correction. Update cannot create output by itself.
             gyroStickPlayerSpace.Update(stickGyroRate, stickAccel, subSamplePeriod);
 
-            if (gyroStickActiveThisReport) {
+            bool anyStickActive = gyroLeftStickActiveThisReport ||
+                                  gyroRightStickActiveThisReport;
+            if (anyStickActive) {
                 float yawRate;
                 float pitchRate;
                 float ignoredRoll;
@@ -2309,25 +2368,20 @@ namespace BetterJoyForCemu {
             if (!flushToStick)
                 return;
 
-            float[] controlStick = extraGyroFeature == "joy_left" ? stick : stick2;
-            float physicalX = controlStick[0];
-            float physicalY = controlStick[1];
-            float dx = gyroStickActiveThisReport ? pendingGyroStickDx : 0.0f;
-            float dy = gyroStickActiveThisReport ? pendingGyroStickDy : 0.0f;
+            float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
+            float physicalX = diagnosticStick[0];
+            float physicalY = diagnosticStick[1];
+            float dx = anyStickActive ? pendingGyroStickDx : 0.0f;
+            float dy = anyStickActive ? pendingGyroStickDy : 0.0f;
 
-            if (gyroStickActiveThisReport) {
-                float stickReduction = EffectiveGyroStickReduction();
-                controlStick[0] = Math.Max(-1.0f, Math.Min(1.0f,
-                    physicalX / stickReduction + dx));
-                controlStick[1] = Math.Max(-1.0f, Math.Min(1.0f,
-                    physicalY / stickReduction + dy));
-            }
+            if (gyroLeftStickActiveThisReport)
+                ApplyGyroToStick(stick, dx, dy);
+            if (gyroRightStickActiveThisReport)
+                ApplyGyroToStick(stick2, dx, dy);
 
-            CaptureGyroStickDiagnosticOutput(gyroStickActiveThisReport,
-                                              gyroStickReportDt,
-                                              physicalX, physicalY,
-                                              dx, dy,
-                                              controlStick[0], controlStick[1]);
+            CaptureGyroStickDiagnosticOutput(anyStickActive, gyroStickReportDt,
+                                              physicalX, physicalY, dx, dy,
+                                              diagnosticStick[0], diagnosticStick[1]);
             pendingGyroStickDx = pendingGyroStickDy = 0.0f;
         }
 
@@ -2351,7 +2405,7 @@ namespace BetterJoyForCemu {
             // Keep learning the selected controller's zero-rate bias while gyro-mouse is
             // inactive, so activating it after the controller has been resting does not begin
             // with half a second of cursor crawl.
-            bool gyroPointerActive = MappingValue("active_gyro") == "0" || active_gyro;
+            bool gyroPointerActive = gyroMouseEnabledThisReport;
             Vector3 mouseGyroRate = gyr_g;
             Vector3 mouseAccel = acc_g;
             if (UseFilteredIMU) {

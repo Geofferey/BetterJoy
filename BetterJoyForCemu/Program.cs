@@ -684,7 +684,7 @@ namespace BetterJoyForCemu {
         public static void Start() {
             // Previously only ever called from MainForm_Load, so a Windows Service (which never
             // constructs a MainForm) silently never loaded remap keybinds (capture/home/sl_*/
-            // sr_*/shake/reset_mouse/active_gyro) at all - every Config.Value(...) lookup for
+            // sr_*/shake/reset_mouse/legacy active_gyro) at all - every Config.Value(...) lookup for
             // them returned "" under service mode. Moved here so both modes get it.
             Config.Init(CalibrationState.CaliData, CalibrationState.StickCaliData, CalibrationState.Stick2CaliData);
 
@@ -770,7 +770,8 @@ namespace BetterJoyForCemu {
             form.AppendTextBox("All systems go\r\n");
         }
 
-        // reset_mouse/active_gyro used to be decided here (single key_/mse_ trigger only), but
+        // reset_mouse and the legacy shared active_gyro used to be decided here (single
+        // key_/mse_ trigger only), but
         // now that both support a "+"-joined combo mixing controller/keyboard/mouse inputs
         // together (see Joycon.IsComboHeld), they need simultaneous visibility into all three at
         // once - evaluated once per packet in Joycon.DoThingsWithButtons instead, which already

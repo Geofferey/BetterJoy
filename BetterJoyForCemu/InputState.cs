@@ -6,7 +6,8 @@ namespace BetterJoyForCemu {
     // already work identically in GUI mode (direct WindowsInput.Capture.Global hook) and
     // service mode (forwarded from the session-launched input helper over a pipe).
     //
-    // Exists so a bind can be a COMBINATION of inputs (e.g. active_gyro's "joy_4+key_65"), not
+    // Exists so a bind can be a COMBINATION of inputs (for example a gyro activation mapping's
+    // "joy_4+key_65"), not
     // just one - checking "is this whole combo held right now" needs to know the current held/
     // released state of every key and mouse button, not just react to the one that just changed.
     // Controller buttons don't need an entry here: each Joycon already exposes its own current

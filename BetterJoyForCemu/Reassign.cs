@@ -16,6 +16,7 @@ namespace BetterJoyForCemu {
         private WindowsInput.Events.Sources.IMouseEventSource mouse;
 
         ContextMenuStrip menu_joy_buttons = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_activation = new ContextMenuStrip();
 
         private Control curAssignment;
 
@@ -94,11 +95,16 @@ namespace BetterJoyForCemu {
             InitializeComponent();
             MakeRoomForControllerSelector();
             AddGyroMouseButtons();
+            AddGyroActivationSection();
 
             foreach (int i in Enum.GetValues(typeof(Joycon.Button))) {
                 ToolStripMenuItem temp = new ToolStripMenuItem(Enum.GetName(typeof(Joycon.Button), i));
                 temp.Tag = i;
                 menu_joy_buttons.Items.Add(temp);
+
+                ToolStripMenuItem activationItem = new ToolStripMenuItem(Enum.GetName(typeof(Joycon.Button), i));
+                activationItem.Tag = i;
+                menu_gyro_activation.Items.Add(activationItem);
             }
 
             // Explicitly disabling a special mapping is different from middle-clicking it back
@@ -107,18 +113,27 @@ namespace BetterJoyForCemu {
             // and permanently last after every physical controller-button choice.
             menu_joy_buttons.Items.Add(new ToolStripSeparator());
             menu_joy_buttons.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "0" });
+            menu_gyro_activation.Items.Add(new ToolStripSeparator());
+            menu_gyro_activation.Items.Add(new ToolStripMenuItem("Always On") { Tag = "always" });
+            menu_gyro_activation.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "0" });
 
             menu_joy_buttons.ItemClicked += Menu_joy_buttons_ItemClicked;
+            menu_gyro_activation.ItemClicked += Menu_joy_buttons_ItemClicked;
 
             specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
             specialButtons.AddRange(gyroMouseButtons);
+            specialButtons.AddRange(gyroStickActivationButtons);
 
             foreach (SplitButton c in specialButtons) {
-                c.Tag = c.Name.Substring(4);
+                c.Tag = c == btn_active_gyro
+                    ? "active_gyro_mouse"
+                    : c.Name.Substring(4);
                 GetPrettyName(c);
 
                 c.MouseDown += Remap;
-                c.Menu = menu_joy_buttons;
+                c.Menu = IsGyroActivationKey((string)c.Tag)
+                    ? menu_gyro_activation
+                    : menu_joy_buttons;
                 c.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             }
 
@@ -132,7 +147,14 @@ namespace BetterJoyForCemu {
         // hand-computing six more rows' worth of Designer.cs pixel coordinates in a single
         // column that would otherwise run the form well past its current height.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
+        private readonly List<SplitButton> gyroStickActivationButtons = new List<SplitButton>();
         private List<SplitButton> specialButtons;
+
+        private static bool IsGyroActivationKey(string key) {
+            return key == "active_gyro_mouse" ||
+                   key == "active_gyro_left_stick" ||
+                   key == "active_gyro_right_stick";
+        }
 
         private const int ControllerSelectorHeight = 36;
 
@@ -212,6 +234,59 @@ namespace BetterJoyForCemu {
             // Second column needs more width than the Designer-sized form has - height already
             // fits (this column has fewer rows than the first one).
             ClientSize = new Size(Math.Max(ClientSize.Width, col2ButtonX + buttonWidth + 15), ClientSize.Height);
+        }
+
+        private void AddGyroActivationSection() {
+            const int activationLabelX = 15;
+            const int activationButtonX = 105;
+            const int buttonWidth = 130;
+            const int rowSpacing = 25;
+
+            // Start immediately below the final Gyro Mouse Only row. Reuse the Designer-owned
+            // recenter and mouse activation controls here so every gyro activation/orientation
+            // control lives in one visual group instead of being split across both columns.
+            const int headerY = 251;
+            int entryStartY = headerY + 24;
+
+            Controls.Add(new Label {
+                AutoSize = true,
+                Location = new Point(activationLabelX, headerY),
+                Text = "Gyro Activation",
+                Font = new Font(Font, FontStyle.Bold),
+            });
+
+            lbl_reset_mouse.Location = new Point(activationLabelX, entryStartY + 5);
+            btn_reset_mouse.Location = new Point(activationButtonX, entryStartY);
+            lbl_activate_gyro.AutoSize = true;
+            lbl_activate_gyro.Text = "Mouse";
+            lbl_activate_gyro.Location = new Point(activationLabelX, entryStartY + rowSpacing + 5);
+            btn_active_gyro.Location = new Point(activationButtonX, entryStartY + rowSpacing);
+
+            var entries = new (string key, string label)[] {
+                ("active_gyro_left_stick", "Left Stick"),
+                ("active_gyro_right_stick", "Right Stick"),
+            };
+            for (int row = 0; row < entries.Length; row++) {
+                int y = entryStartY + (row + 2) * rowSpacing;
+                Controls.Add(new Label {
+                    AutoSize = true,
+                    Location = new Point(activationLabelX, y + 5),
+                    Text = entries[row].label,
+                });
+                var button = new SplitButton {
+                    Name = "btn_" + entries[row].key,
+                    Location = new Point(activationButtonX, y),
+                    Size = new Size(buttonWidth, 23),
+                    UseVisualStyleBackColor = true,
+                };
+                Controls.Add(button);
+                gyroStickActivationButtons.Add(button);
+            }
+
+            int finalRowY = entryStartY + 3 * rowSpacing;
+            btn_close.Location = new Point(315, finalRowY);
+            btn_apply.Location = new Point(405, finalRowY);
+            ClientSize = new Size(ClientSize.Width, Math.Max(ClientSize.Height, finalRowY + 34));
         }
 
         private void SetRemoteProfiles(IEnumerable<ControllerRecord> records) {
@@ -571,11 +646,10 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            // Gyro-mouse buttons only ever check for a "joy_" binding at runtime (see Joycon.
-            // SimulateGyroMouseButton/Scroll) - a keyboard/mouse trigger would capture fine here
-            // but then silently do nothing, exactly the "looks bound but doesn't work" trap
-            // GyroToJoyOrMouse just turned out to be. Left uncaptured so JoyPoll_Tick or the
-            // right-click menu (both joy_-only) remain the way to actually assign these.
+            // Gyro-mouse action buttons only ever check for a "joy_" binding at runtime (see
+            // Joycon.SimulateGyroMouseButton/Scroll). A keyboard/mouse trigger would capture fine
+            // here but then silently do nothing, so leave those actions uncaptured. Activation
+            // mappings are not controller-only and may still use keyboard or mouse input.
             if (e.Data.ButtonDown != null && !ControllerOnlyKeys.Contains((string)curAssignment.Tag)) {
                 SetBindValue((string)curAssignment.Tag, "mse_" + ((int)e.Data.ButtonDown.Button));
                 AsyncPrettyName(curAssignment);
@@ -633,12 +707,24 @@ namespace BetterJoyForCemu {
 
         private void GetPrettyName(Control c) {
             string val = GetBindValue((string)c.Tag);
+            if (IsGyroActivationKey((string)c.Tag) && val == "always") {
+                c.Text = "Always On";
+                tip_reassign.SetToolTip(c,
+                    "Always on.\r\n\r\nLeft-click to detect input.\r\n" +
+                    "Middle-click to reset.\r\nRight-click for activation options.");
+                return;
+            }
             bool unassigned = val == "0";
 
             // A combo is "+"-joined parts (see Joycon.IsComboHeld) - a single-input bind is just
             // a one-part combo, so this handles both uniformly.
-            string description = unassigned ? "(unassigned)" : String.Join("+", val.Split('+').Select(DescribeBindPart));
-            c.Text = unassigned ? ((c == btn_home) ? "Guide" : "") : description;
+            bool disabledActivation = unassigned && IsGyroActivationKey((string)c.Tag);
+            string description = disabledActivation
+                ? "(disabled)"
+                : (unassigned ? "(unassigned)" : String.Join("+", val.Split('+').Select(DescribeBindPart)));
+            c.Text = disabledActivation
+                ? "Disabled"
+                : (unassigned ? ((c == btn_home) ? "Guide" : "") : description);
 
             // Long combos can still run out of room on the button itself (see Reassign.Designer.cs
             // for the width these buttons get) - the tooltip always shows the full, untruncated

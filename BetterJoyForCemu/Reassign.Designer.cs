@@ -253,11 +253,11 @@ namespace BetterJoyForCemu {
             // lbl_activate_gyro
             // 
             this.lbl_activate_gyro.AutoSize = true;
-            this.lbl_activate_gyro.Location = new System.Drawing.Point(14, 252);
+            this.lbl_activate_gyro.Location = new System.Drawing.Point(15, 252);
             this.lbl_activate_gyro.Name = "lbl_activate_gyro";
-            this.lbl_activate_gyro.Size = new System.Drawing.Size(71, 13);
+            this.lbl_activate_gyro.Size = new System.Drawing.Size(39, 13);
             this.lbl_activate_gyro.TabIndex = 17;
-            this.lbl_activate_gyro.Text = "Activate Gyro";
+            this.lbl_activate_gyro.Text = "Mouse";
             this.lbl_activate_gyro.TextAlign = System.Drawing.ContentAlignment.TopCenter;
             // 
             // btn_active_gyro

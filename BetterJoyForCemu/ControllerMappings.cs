@@ -32,7 +32,12 @@ namespace BetterJoyForCemu {
 
         public static readonly string[] Keys = {
             "capture", "home", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
-            "reset_mouse", "active_gyro", "left_click", "right_click",
+            // active_gyro is retained only to migrate existing per-profile bindings from the
+            // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
+            // independent activation keys below.
+            "reset_mouse", "active_gyro", "active_gyro_mouse",
+            "active_gyro_left_stick", "active_gyro_right_stick",
+            "left_click", "right_click",
             "center_click", "scroll_up", "scroll_down", "clench_gyro",
         };
 
@@ -42,6 +47,9 @@ namespace BetterJoyForCemu {
         };
 
         private static readonly HashSet<string> KnownKeys = new HashSet<string>(Keys, StringComparer.Ordinal);
+        private static readonly HashSet<string> GyroActivationKeys = new HashSet<string>(StringComparer.Ordinal) {
+            "active_gyro_mouse", "active_gyro_left_stick", "active_gyro_right_stick",
+        };
         private static readonly object writeLock = new object();
         private static volatile Dictionary<string, Dictionary<string, string>> profiles =
             new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
@@ -56,9 +64,18 @@ namespace BetterJoyForCemu {
             Dictionary<string, string> profile;
             string value;
             if (!String.IsNullOrEmpty(profileId) &&
-                snapshot.TryGetValue(profileId, out profile) &&
-                profile.TryGetValue(key, out value))
-                return value;
+                snapshot.TryGetValue(profileId, out profile)) {
+                if (profile.TryGetValue(key, out value))
+                    return value;
+
+                // Profiles saved before independent gyro outputs only contain active_gyro.
+                // Preserve that controller's custom bind for whichever output the old global
+                // selector targeted, instead of falling all the way back to another controller's
+                // global/default bind.
+                if (GyroActivationKeys.Contains(key) &&
+                    profile.TryGetValue("active_gyro", out value))
+                    return MigrateGyroActivationValue(key, value);
+            }
 
             return LegacyValue(key);
         }
@@ -86,6 +103,8 @@ namespace BetterJoyForCemu {
         }
 
         public static string DefaultValue(string key) {
+            if (GyroActivationKeys.Contains(key))
+                return LegacyGyroActivationValue(key);
             return AppConfigBackedKeys.Contains(key) ? "0" : Config.GetDefaultValue(key);
         }
 
@@ -283,10 +302,33 @@ namespace BetterJoyForCemu {
         }
 
         private static string LegacyValue(string key) {
+            if (GyroActivationKeys.Contains(key))
+                return LegacyGyroActivationValue(key);
+
             string value = AppConfigBackedKeys.Contains(key)
                 ? ConfigurationManager.AppSettings[key]
                 : Config.Value(key);
             return String.IsNullOrEmpty(value) ? "0" : value;
+        }
+
+        private static string LegacyGyroActivationValue(string key) {
+            return MigrateGyroActivationValue(key, Config.Value("active_gyro"));
+        }
+
+        private static string MigrateGyroActivationValue(string key, string legacyBind) {
+            string legacyMode = ConfigurationManager.AppSettings["GyroToJoyOrMouse"] ?? "none";
+            string matchingMode = key == "active_gyro_mouse"
+                ? "mouse"
+                : (key == "active_gyro_left_stick" ? "joy_left" : "joy_right");
+            if (!String.Equals(legacyMode, matchingMode, StringComparison.Ordinal))
+                return "0"; // disabled
+
+            // The old active_gyro convention used 0 for always enabled. The new independent
+            // mappings need 0 to mean disabled, otherwise removing the selector would turn all
+            // three outputs on together. Preserve the old behavior explicitly for its one target.
+            return String.IsNullOrEmpty(legacyBind) || legacyBind == "0"
+                ? "always"
+                : legacyBind;
         }
 
         private static Dictionary<string, Dictionary<string, string>> CloneProfiles(

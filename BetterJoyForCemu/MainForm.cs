@@ -25,6 +25,7 @@ namespace BetterJoyForCemu {
         private int count;
         private Timer clickTimer;
         private readonly DesktopInputBackend desktopInput;
+        private readonly string[] displayedConfigKeys;
 
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
@@ -75,26 +76,20 @@ namespace BetterJoyForCemu {
                 SetEmptySlotTooltip(v);
             }
 
-            //list all options
-            string[] myConfigs = ConfigurationManager.AppSettings.AllKeys;
+            // Gyro outputs are now selected independently in Controller Profiles. Keep the old
+            // key in App.config only as a one-time compatibility hint for legacy mappings; it is
+            // no longer a runtime setting and should not be editable here.
+            displayedConfigKeys = ConfigurationManager.AppSettings.AllKeys
+                .Where(key => key != "GyroToJoyOrMouse")
+                .ToArray();
             Size childSize = new Size(150, 20);
-            for (int i = 0; i != myConfigs.Length; i++) {
+            for (int i = 0; i != displayedConfigKeys.Length; i++) {
                 settingsTable.RowCount++;
-                settingsTable.Controls.Add(new Label() { Text = myConfigs[i], TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, Size = childSize }, 0, i);
+                settingsTable.Controls.Add(new Label() { Text = displayedConfigKeys[i], TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, Size = childSize }, 0, i);
 
-                var value = ConfigurationManager.AppSettings[myConfigs[i]];
+                var value = ConfigurationManager.AppSettings[displayedConfigKeys[i]];
                 Control childControl;
-                if (myConfigs[i] == "GyroToJoyOrMouse") {
-                    // A free-text field for a fixed set of valid strings just invites typos that
-                    // silently do nothing (extraGyroFeature in Joycon.cs only ever recognizes
-                    // these four exact values) - DropDownList (not DropDown) so it can only ever
-                    // hold one of them, never arbitrary typed text.
-                    var combo = new ComboBox() { DropDownStyle = ComboBoxStyle.DropDownList, Size = childSize };
-                    combo.Items.AddRange(new object[] { "none", "joy_left", "joy_right", "mouse" });
-                    combo.SelectedItem = combo.Items.Contains(value) ? value : "none";
-                    combo.SelectedIndexChanged += cbBox_Changed;
-                    childControl = combo;
-                } else if (value == "true" || value == "false") {
+                if (value == "true" || value == "false") {
                     // MouseClick is correct here - a click on a checkbox already IS the new
                     // value, nothing to wait for.
                     childControl = new CheckBox() { Checked = Boolean.Parse(value), Size = childSize };
@@ -953,7 +948,7 @@ namespace BetterJoyForCemu {
             var configFile = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
             var settings = configFile.AppSettings.Settings;
 
-            for (int row = 0; row < ConfigurationManager.AppSettings.AllKeys.Length; row++) {
+            for (int row = 0; row < displayedConfigKeys.Length; row++) {
                 var valCtl = settingsTable.GetControlFromPosition(1, row);
                 var KeyCtl = settingsTable.GetControlFromPosition(0, row).Text;
 
