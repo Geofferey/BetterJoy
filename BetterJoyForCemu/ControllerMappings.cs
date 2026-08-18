@@ -47,6 +47,7 @@ namespace BetterJoyForCemu {
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
+            "GyroAnalogSliders",
         };
 
         public const string UseAsXbox360 = "xbox360";

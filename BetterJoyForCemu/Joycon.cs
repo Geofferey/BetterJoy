@@ -1101,7 +1101,7 @@ namespace BetterJoyForCemu {
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
         float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
         float GyroStickReduction = float.Parse(ConfigurationManager.AppSettings["GyroStickReduction"]);
-        bool GyroAnalogSliders = Boolean.Parse(ConfigurationManager.AppSettings["GyroAnalogSliders"]);
+        bool GyroAnalogSliders => ProfileBoolOption("GyroAnalogSliders");
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
 

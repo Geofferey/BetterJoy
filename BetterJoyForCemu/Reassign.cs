@@ -17,6 +17,7 @@ namespace BetterJoyForCemu {
 
         ContextMenuStrip menu_joy_buttons = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_activation = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_analog_sliders = new ContextMenuStrip();
 
         private Control curAssignment;
 
@@ -44,6 +45,7 @@ namespace BetterJoyForCemu {
         private ComboBox useAsSelector;
         private ComboBox inactivitySelector;
         private ComboBox gyroActivationModeSelector;
+        private SplitButton btn_gyro_analog_sliders;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
         private CheckBox dragToggleCheckBox;
@@ -140,6 +142,13 @@ namespace BetterJoyForCemu {
             menu_joy_buttons.ItemClicked += Menu_joy_buttons_ItemClicked;
             menu_gyro_activation.ItemClicked += Menu_joy_buttons_ItemClicked;
 
+            // A plain on/off setting, not a bind - shares the SplitButton visual (StyleMappingButton,
+            // via AddMappingRow) with the rows above it, but not their MouseDown/Remap combo-capture
+            // behavior, which has no meaning for a flag with only two fixed states.
+            menu_gyro_analog_sliders.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_gyro_analog_sliders.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_gyro_analog_sliders.ItemClicked += GyroAnalogSlidersMenu_ItemClicked;
+
             specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
@@ -212,6 +221,11 @@ namespace BetterJoyForCemu {
                 };
                 gyroStickActivationButtons.Add(button);
             }
+
+            btn_gyro_analog_sliders = new SplitButton { Name = "btn_gyro_analog_sliders" };
+            btn_gyro_analog_sliders.Menu = menu_gyro_analog_sliders;
+            btn_gyro_analog_sliders.Click += (sender, e) =>
+                menu_gyro_analog_sliders.Show(btn_gyro_analog_sliders, 0, btn_gyro_analog_sliders.Height);
 
             gameControllersButton = new Button {
                 Text = "Game Controllers...",
@@ -437,13 +451,20 @@ namespace BetterJoyForCemu {
             AddMappingRow(page, null, gyroStickActivationButtons[0], "Left stick", 195, 24, 232, 362);
             AddMappingRow(page, null, gyroStickActivationButtons[1], "Right stick", 232, 24, 232, 362);
 
-            page.Controls.Add(CreateDivider(24, 274));
-            AddSectionHeading(page, "Orientation", 289,
-                "Reset the current controller angle while gyro mouse is active.");
-            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 345, 24, 138, 456);
+            // Gyro-driven L2/R2 analog output while a stick-gyro output button is held (see
+            // Joycon.GyroAnalogSliders) - listed last since it modifies the stick outputs above
+            // rather than being an output of its own. A plain on/off flag, not a bind, so its
+            // SplitButton opens menu_gyro_analog_sliders on any click (wired in
+            // CreateDynamicProfileControls) instead of the Remap combo-capture the other rows use.
+            AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 232, 362);
 
-            page.Controls.Add(CreateDivider(24, 389));
-            AddSectionHeading(page, "Mouse actions", 404,
+            page.Controls.Add(CreateDivider(24, 311));
+            AddSectionHeading(page, "Orientation", 326,
+                "Reset the current controller angle while gyro mouse is active.");
+            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 382, 24, 138, 456);
+
+            page.Controls.Add(CreateDivider(24, 426));
+            AddSectionHeading(page, "Mouse actions", 441,
                 "Optional controller inputs available while gyro mouse is active.");
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
@@ -452,9 +473,9 @@ namespace BetterJoyForCemu {
                 int labelX = column == 0 ? 24 : 323;
                 int buttonX = column == 0 ? 114 : 423;
                 AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
-                    456 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+                    493 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
             }
-            page.AutoScrollMinSize = new Size(0, 555);
+            page.AutoScrollMinSize = new Size(0, 592);
             return page;
         }
 
@@ -661,6 +682,7 @@ namespace BetterJoyForCemu {
         private void LoadProfileOptions(bool hasProfile) {
             Control[] controls = {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
+                btn_gyro_analog_sliders,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
             };
@@ -688,6 +710,8 @@ namespace BetterJoyForCemu {
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
+                btn_gyro_analog_sliders.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroAnalogSliders") ? "Enabled" : "Disabled";
 
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);
@@ -742,7 +766,8 @@ namespace BetterJoyForCemu {
         }
 
         private void StyleAssignmentMenus() {
-            foreach (ContextMenuStrip menu in new[] { menu_joy_buttons, menu_gyro_activation }) {
+            foreach (ContextMenuStrip menu in
+                     new[] { menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 menu.ShowImageMargin = false;
@@ -1023,6 +1048,15 @@ namespace BetterJoyForCemu {
 
             SetBindValue((string)caller.Tag, value);
             GetPrettyName(caller);
+        }
+
+        private void GyroAnalogSlidersMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(SelectedProfileId, "GyroAnalogSliders", value);
+            btn_gyro_analog_sliders.Text = value == "true" ? "Enabled" : "Disabled";
         }
 
         private void Remap(object sender, MouseEventArgs e) {
