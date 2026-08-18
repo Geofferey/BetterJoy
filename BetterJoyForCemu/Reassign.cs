@@ -56,7 +56,20 @@ namespace BetterJoyForCemu {
 
         private string SelectedProfileId {
             get {
-                ControllerProfileInfo selected = controllerSelector?.SelectedItem as ControllerProfileInfo;
+                if (controllerSelector == null)
+                    return null;
+
+                // ComboBox.SelectedItem internally indexes Items[SelectedIndex]. When the last
+                // controller disappears, WinForms can briefly retain SelectedIndex == 0 after
+                // the refresh has emptied Items, making that otherwise innocent property getter
+                // throw ArgumentOutOfRangeException. Validate the pair explicitly before reading
+                // the collection so the dialog transitions cleanly to its no-profile state.
+                int selectedIndex = controllerSelector.SelectedIndex;
+                if (selectedIndex < 0 || selectedIndex >= controllerSelector.Items.Count)
+                    return null;
+
+                ControllerProfileInfo selected =
+                    controllerSelector.Items[selectedIndex] as ControllerProfileInfo;
                 return selected?.ProfileId;
             }
         }
