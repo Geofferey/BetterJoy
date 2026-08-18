@@ -114,6 +114,18 @@ namespace BetterJoyForCemu.Controller {
 			xbox_controller.Disconnect();
 		}
 
+		// XInput assigns every connected virtual Xbox target a user slot. Controller Profiles uses
+		// this to select the corresponding DirectInput entry before opening its control panel.
+		public int UserIndex {
+			get {
+				try {
+					return xbox_controller.UserIndex;
+				} catch {
+					return -1;
+				}
+			}
+		}
+
 		private void DoUpdateInput(OutputControllerXbox360InputState new_state) {
 			xbox_controller.SetButtonState(Xbox360Button.LeftThumb, new_state.thumb_stick_left);
 			xbox_controller.SetButtonState(Xbox360Button.RightThumb, new_state.thumb_stick_right);

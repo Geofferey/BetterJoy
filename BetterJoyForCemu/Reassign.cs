@@ -36,6 +36,15 @@ namespace BetterJoyForCemu {
         private readonly List<ControllerProfileInfo> remoteProfiles = new List<ControllerProfileInfo>();
         private readonly string preferredProfileId;
         private ComboBox controllerSelector;
+        private Button gameControllersButton;
+        private Label profileStatusDot;
+        private Label profileStatusLabel;
+        private Label virtualControllerNameLabel;
+        private Label virtualControllerDetailLabel;
+        private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
+        private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
+        private Panel profilePageHost;
+        private Panel profileNavigationAccent;
         private bool updatingControllerSelector;
         private bool initialControllerSelection = true;
         private long newestControllerSequence = -1;
@@ -55,7 +64,7 @@ namespace BetterJoyForCemu {
             "clench_gyro"
         };
 
-        private string SelectedProfileId {
+        private ControllerProfileInfo SelectedProfile {
             get {
                 if (controllerSelector == null)
                     return null;
@@ -71,9 +80,11 @@ namespace BetterJoyForCemu {
 
                 ControllerProfileInfo selected =
                     controllerSelector.Items[selectedIndex] as ControllerProfileInfo;
-                return selected?.ProfileId;
+                return selected;
             }
         }
+
+        private string SelectedProfileId => SelectedProfile?.ProfileId;
 
         private string GetBindValue(string key) {
             return ControllerMappings.Value(SelectedProfileId, key);
@@ -93,9 +104,8 @@ namespace BetterJoyForCemu {
             this.serviceClient = serviceClient;
             this.preferredProfileId = preferredProfileId;
             InitializeComponent();
-            MakeRoomForControllerSelector();
-            AddGyroMouseButtons();
-            AddGyroActivationSection();
+            CreateDynamicProfileControls();
+            BuildProfileInterface();
 
             foreach (int i in Enum.GetValues(typeof(Joycon.Button))) {
                 ToolStripMenuItem temp = new ToolStripMenuItem(Enum.GetName(typeof(Joycon.Button), i));
@@ -137,15 +147,15 @@ namespace BetterJoyForCemu {
                 c.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             }
 
-            AddControllerSelector();
+            StyleAssignmentMenus();
             if (remoteRecords != null)
                 SetRemoteProfiles(remoteRecords);
             RefreshControllerChoices();
         }
 
-        // Built in code, not the Designer, as a second column beside the existing one - avoids
-        // hand-computing six more rows' worth of Designer.cs pixel coordinates in a single
-        // column that would otherwise run the form well past its current height.
+        // These controls are created in code because the profile window composes its pages at
+        // runtime. Their mapping keys and event wiring are still shared with the original
+        // Designer-owned buttons below, so page navigation never creates a second behavior path.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
         private readonly List<SplitButton> gyroStickActivationButtons = new List<SplitButton>();
         private List<SplitButton> specialButtons;
@@ -156,35 +166,17 @@ namespace BetterJoyForCemu {
                    key == "active_gyro_right_stick";
         }
 
-        private const int ControllerSelectorHeight = 36;
+        private static readonly Color ProfileBackground = Color.FromArgb(31, 32, 33);
+        private static readonly Color ProfileSidebar = Color.FromArgb(26, 27, 28);
+        private static readonly Color ProfileSurface = Color.FromArgb(45, 46, 48);
+        private static readonly Color ProfileSurfaceHover = Color.FromArgb(55, 56, 58);
+        private static readonly Color ProfileBorder = Color.FromArgb(68, 69, 72);
+        private static readonly Color ProfileText = Color.FromArgb(244, 244, 244);
+        private static readonly Color ProfileMuted = Color.FromArgb(184, 190, 199);
+        private static readonly Color ProfileAccent = Color.FromArgb(255, 188, 21);
+        private static readonly Color ProfileConnected = Color.FromArgb(62, 201, 116);
 
-        private void MakeRoomForControllerSelector() {
-            foreach (Control control in Controls)
-                control.Location = new Point(control.Left, control.Top + ControllerSelectorHeight);
-            ClientSize = new Size(ClientSize.Width, ClientSize.Height + ControllerSelectorHeight);
-        }
-
-        private void AddControllerSelector() {
-            var label = new Label {
-                AutoSize = true,
-                Location = new Point(15, 16),
-                Text = "Profile",
-            };
-            controllerSelector = new ComboBox {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Location = new Point(105, 11),
-                Size = new Size(375, 21),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            };
-            controllerSelector.SelectedIndexChanged += ControllerSelector_SelectedIndexChanged;
-            Controls.Add(label);
-            Controls.Add(controllerSelector);
-        }
-
-        private void AddGyroMouseButtons() {
-            // Short labels + a shared section header instead of repeating "(Gyro Mouse)" on each
-            // one - the old per-row suffix made the label wider than the gap before the button,
-            // which is what was overlapping/garbling the button text in this column.
+        private void CreateDynamicProfileControls() {
             var entries = new (string key, string label)[] {
                 ("left_click", "Left Click"),
                 ("right_click", "Right Click"),
@@ -193,100 +185,391 @@ namespace BetterJoyForCemu {
                 ("scroll_down", "Scroll Down"),
                 ("clench_gyro", "Clench Gyro"),
             };
-
-            const int col2LabelX = 250;
-            const int col2ButtonX = 350;
-            const int buttonWidth = 130;
-            // Lines up with the left column's row 2-6 rhythm (btn_home..btn_sr_r), leaving row 1's
-            // slot free for the header below.
-            const int entryStartY = 41 + ControllerSelectorHeight;
-            const int rowSpacing = 29;
-
-            var header = new Label {
-                AutoSize = true,
-                Location = new Point(col2LabelX, 17 + ControllerSelectorHeight),
-                Text = "Gyro Mouse Only",
-                Font = new Font(Font, FontStyle.Bold),
-            };
-            Controls.Add(header);
-
-            for (int row = 0; row < entries.Length; row++) {
-                int y = entryStartY + row * rowSpacing;
-
-                var label = new Label {
-                    AutoSize = true,
-                    Location = new Point(col2LabelX, y + 5),
-                    Text = entries[row].label,
-                    TextAlign = ContentAlignment.TopCenter,
-                };
+            foreach (var entry in entries) {
                 var button = new SplitButton {
-                    Name = "btn_" + entries[row].key,
-                    Location = new Point(col2ButtonX, y),
-                    Size = new Size(buttonWidth, 23),
-                    UseVisualStyleBackColor = true,
+                    Name = "btn_" + entry.key,
                 };
-
-                Controls.Add(label);
-                Controls.Add(button);
                 gyroMouseButtons.Add(button);
             }
 
-            // Second column needs more width than the Designer-sized form has - height already
-            // fits (this column has fewer rows than the first one).
-            ClientSize = new Size(Math.Max(ClientSize.Width, col2ButtonX + buttonWidth + 15), ClientSize.Height);
-        }
-
-        private void AddGyroActivationSection() {
-            const int activationLabelX = 15;
-            const int activationButtonX = 105;
-            const int buttonWidth = 130;
-            const int rowSpacing = 25;
-
-            // Start immediately below the final Gyro Mouse Only row. Reuse the Designer-owned
-            // recenter and mouse activation controls here so every gyro activation/orientation
-            // control lives in one visual group instead of being split across both columns.
-            const int headerY = 251;
-            int entryStartY = headerY + 24;
-
-            Controls.Add(new Label {
-                AutoSize = true,
-                Location = new Point(activationLabelX, headerY),
-                Text = "Gyro Activation",
-                Font = new Font(Font, FontStyle.Bold),
-            });
-
-            lbl_reset_mouse.Location = new Point(activationLabelX, entryStartY + 5);
-            btn_reset_mouse.Location = new Point(activationButtonX, entryStartY);
-            lbl_activate_gyro.AutoSize = true;
-            lbl_activate_gyro.Text = "Mouse";
-            lbl_activate_gyro.Location = new Point(activationLabelX, entryStartY + rowSpacing + 5);
-            btn_active_gyro.Location = new Point(activationButtonX, entryStartY + rowSpacing);
-
-            var entries = new (string key, string label)[] {
+            var activationEntries = new (string key, string label)[] {
                 ("active_gyro_left_stick", "Left Stick"),
                 ("active_gyro_right_stick", "Right Stick"),
             };
-            for (int row = 0; row < entries.Length; row++) {
-                int y = entryStartY + (row + 2) * rowSpacing;
-                Controls.Add(new Label {
-                    AutoSize = true,
-                    Location = new Point(activationLabelX, y + 5),
-                    Text = entries[row].label,
-                });
+            foreach (var entry in activationEntries) {
                 var button = new SplitButton {
-                    Name = "btn_" + entries[row].key,
-                    Location = new Point(activationButtonX, y),
-                    Size = new Size(buttonWidth, 23),
-                    UseVisualStyleBackColor = true,
+                    Name = "btn_" + entry.key,
                 };
-                Controls.Add(button);
                 gyroStickActivationButtons.Add(button);
             }
 
-            int finalRowY = entryStartY + 3 * rowSpacing;
-            btn_close.Location = new Point(315, finalRowY);
-            btn_apply.Location = new Point(405, finalRowY);
-            ClientSize = new Size(ClientSize.Width, Math.Max(ClientSize.Height, finalRowY + 34));
+            gameControllersButton = new Button {
+                Text = "Game Controllers...",
+            };
+            gameControllersButton.Click += GameControllersButton_Click;
+            tip_reassign.SetToolTip(gameControllersButton,
+                "Open the selected profile's virtual controller properties when connected.\r\n" +
+                "Disconnected profiles open the standard Game Controllers list.");
+        }
+
+        private void BuildProfileInterface() {
+            SuspendLayout();
+            Controls.Clear();
+
+            AutoScaleMode = AutoScaleMode.Dpi;
+            BackColor = ProfileBackground;
+            ForeColor = ProfileText;
+            Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            ClientSize = new Size(840, 680);
+            MinimumSize = new Size(856, 719);
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = false;
+            StartPosition = FormStartPosition.CenterParent;
+
+            Panel header = BuildProfileHeader();
+            Panel footer = BuildProfileFooter();
+            Panel body = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = ProfileBackground,
+            };
+            Panel sidebar = BuildProfileSidebar();
+            profilePageHost = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = ProfileBackground,
+            };
+            body.Controls.Add(profilePageHost);
+            body.Controls.Add(sidebar);
+
+            Controls.Add(body);
+            Controls.Add(footer);
+            Controls.Add(header);
+
+            Panel bindingsPage = BuildBindingsPage();
+            Panel gyroPage = BuildGyroPage();
+            Panel virtualControllerPage = BuildVirtualControllerPage();
+            profilePages.Add("bindings", bindingsPage);
+            profilePages.Add("gyro", gyroPage);
+            profilePages.Add("virtual", virtualControllerPage);
+            profilePageHost.Controls.Add(bindingsPage);
+            profilePageHost.Controls.Add(gyroPage);
+            profilePageHost.Controls.Add(virtualControllerPage);
+            ShowProfilePage("gyro");
+
+            ResumeLayout(true);
+        }
+
+        private Panel BuildProfileHeader() {
+            Panel header = new Panel {
+                Dock = DockStyle.Top,
+                Height = 66,
+                BackColor = Color.FromArgb(38, 39, 41),
+            };
+            header.Paint += (sender, e) => {
+                using (Pen pen = new Pen(ProfileBorder))
+                    e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
+            };
+
+            header.Controls.Add(CreateLabel("Controller profile", 18, 25, ProfileText, false));
+            controllerSelector = new ComboBox {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = ProfileSurface,
+                ForeColor = ProfileText,
+                Font = new Font(Font.FontFamily, 9.25F),
+                Location = new Point(140, 19),
+                Size = new Size(535, 25),
+            };
+            controllerSelector.SelectedIndexChanged += ControllerSelector_SelectedIndexChanged;
+            header.Controls.Add(controllerSelector);
+
+            profileStatusDot = CreateLabel("●", 692, 23, ProfileConnected, true);
+            profileStatusLabel = CreateLabel("Connected", 709, 25, ProfileConnected, false);
+            header.Controls.Add(profileStatusDot);
+            header.Controls.Add(profileStatusLabel);
+            return header;
+        }
+
+        private Panel BuildProfileFooter() {
+            Panel footer = new Panel {
+                Dock = DockStyle.Bottom,
+                Height = 54,
+                BackColor = Color.FromArgb(37, 38, 40),
+            };
+            footer.Paint += (sender, e) => {
+                using (Pen pen = new Pen(ProfileBorder))
+                    e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
+            };
+
+            StyleStandardButton(btn_close, false);
+            btn_close.Text = "Close";
+            btn_close.Size = new Size(84, 32);
+            btn_close.Location = new Point(650, 12);
+
+            StyleStandardButton(btn_apply, true);
+            btn_apply.Size = new Size(84, 32);
+            btn_apply.Location = new Point(744, 12);
+            footer.Controls.Add(btn_close);
+            footer.Controls.Add(btn_apply);
+            return footer;
+        }
+
+        private Panel BuildProfileSidebar() {
+            Panel sidebar = new Panel {
+                Dock = DockStyle.Left,
+                Width = 178,
+                BackColor = ProfileSidebar,
+            };
+            sidebar.Paint += (sender, e) => {
+                using (Pen pen = new Pen(ProfileBorder))
+                    e.Graphics.DrawLine(pen, sidebar.Width - 1, 0, sidebar.Width - 1, sidebar.Height);
+            };
+            sidebar.Controls.Add(CreateLabel("PROFILE SETTINGS", 20, 25,
+                Color.FromArgb(151, 174, 205), false, 8F));
+
+            profileNavigationAccent = new Panel {
+                BackColor = ProfileAccent,
+                Location = new Point(10, 60),
+                Size = new Size(3, 40),
+            };
+            sidebar.Controls.Add(profileNavigationAccent);
+            sidebar.Controls.Add(CreateNavigationButton("Bindings", "bindings", 60));
+            sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 104));
+            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 148));
+            return sidebar;
+        }
+
+        private Button CreateNavigationButton(string text, string key, int top) {
+            Button button = new Button {
+                Text = text,
+                Tag = key,
+                Location = new Point(13, top),
+                Size = new Size(153, 40),
+                FlatStyle = FlatStyle.Flat,
+                FlatAppearance = { BorderSize = 0, MouseOverBackColor = ProfileSurfaceHover },
+                BackColor = ProfileSidebar,
+                ForeColor = ProfileText,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(14, 0, 0, 0),
+                Cursor = Cursors.Hand,
+                Font = new Font(Font, FontStyle.Regular),
+            };
+            button.Click += (sender, e) => ShowProfilePage(key);
+            profileNavigationButtons.Add(key, button);
+            return button;
+        }
+
+        private void ShowProfilePage(string key) {
+            foreach (KeyValuePair<string, Panel> page in profilePages)
+                page.Value.Visible = page.Key == key;
+            foreach (KeyValuePair<string, Button> navigation in profileNavigationButtons) {
+                bool selected = navigation.Key == key;
+                navigation.Value.BackColor = selected ? Color.FromArgb(58, 52, 34) : ProfileSidebar;
+                if (navigation.Value.Font.Bold != selected) {
+                    Font oldFont = navigation.Value.Font;
+                    navigation.Value.Font = new Font(oldFont,
+                        selected ? FontStyle.Bold : FontStyle.Regular);
+                    oldFont.Dispose();
+                }
+                if (selected && profileNavigationAccent != null)
+                    profileNavigationAccent.Top = navigation.Value.Top;
+            }
+            if (profilePages.TryGetValue(key, out Panel selectedPage))
+                selectedPage.BringToFront();
+        }
+
+        private Panel CreateProfilePage(string title, string description) {
+            Panel page = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = ProfileBackground,
+                AutoScroll = true,
+                Visible = false,
+            };
+            page.Controls.Add(CreateLabel(title, 24, 17, ProfileText, true, 15F));
+            Label detail = CreateLabel(description, 24, 48, ProfileMuted, false, 9.25F);
+            detail.AutoSize = false;
+            detail.Size = new Size(570, 22);
+            page.Controls.Add(detail);
+            page.Controls.Add(CreateDivider(24, 78));
+            return page;
+        }
+
+        private Panel BuildBindingsPage() {
+            Panel page = CreateProfilePage("Bindings",
+                "Choose the controller inputs used for system actions and Joy-Con rail buttons.");
+            AddSectionHeading(page, "System controls", 96,
+                "Common actions available from this controller profile.");
+            AddMappingRow(page, lbl_capture, btn_capture, "Capture", 157, 24, 150, 430);
+            AddMappingRow(page, lbl_home, btn_home, "Home / Guide", 196, 24, 150, 430);
+            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 235, 24, 150, 430);
+
+            page.Controls.Add(CreateDivider(24, 284));
+            AddSectionHeading(page, "Joy-Con rail buttons", 301,
+                "Independent mappings for the SL and SR buttons on each Joy-Con.");
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 362, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 362, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 403, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 403, 315, 440, 154);
+            return page;
+        }
+
+        private Panel BuildGyroPage() {
+            Panel page = CreateProfilePage("Gyro",
+                "Choose where motion is sent and how each output activates.");
+            AddSectionHeading(page, "Output activation", 86,
+                "Set each output to always on, disabled, or activate it with a binding.");
+            page.Controls.Add(CreateLabel("Output", 24, 137, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 232, 137, ProfileMuted, false, 8.25F));
+            AddMappingRow(page, lbl_activate_gyro, btn_active_gyro, "Mouse", 158, 24, 232, 362);
+            AddMappingRow(page, null, gyroStickActivationButtons[0], "Left stick", 195, 24, 232, 362);
+            AddMappingRow(page, null, gyroStickActivationButtons[1], "Right stick", 232, 24, 232, 362);
+
+            page.Controls.Add(CreateDivider(24, 274));
+            AddSectionHeading(page, "Orientation", 289,
+                "Reset the current controller angle while gyro mouse is active.");
+            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 345, 24, 138, 456);
+
+            page.Controls.Add(CreateDivider(24, 389));
+            AddSectionHeading(page, "Mouse actions", 404,
+                "Optional controller inputs available while gyro mouse is active.");
+            string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
+            for (int index = 0; index < gyroMouseButtons.Count; index++) {
+                int column = index % 2;
+                int row = index / 2;
+                int labelX = column == 0 ? 24 : 323;
+                int buttonX = column == 0 ? 114 : 423;
+                AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
+                    456 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+            }
+            page.AutoScrollMinSize = new Size(0, 555);
+            return page;
+        }
+
+        private Panel BuildVirtualControllerPage() {
+            Panel page = CreateProfilePage("Virtual controller",
+                "Inspect and test the virtual gamepad connected to this profile.");
+            AddSectionHeading(page, "Output device", 96,
+                "Windows exposes connected profiles as virtual game controllers.");
+
+            Panel deviceCard = new Panel {
+                Location = new Point(24, 157),
+                Size = new Size(570, 142),
+                BackColor = Color.FromArgb(38, 39, 41),
+            };
+            deviceCard.Paint += (sender, e) => ControlPaint.DrawBorder(
+                e.Graphics, deviceCard.ClientRectangle, ProfileBorder, ButtonBorderStyle.Solid);
+            Label icon = CreateLabel("◎", 19, 22, ProfileAccent, true, 21F);
+            virtualControllerNameLabel = CreateLabel("Virtual controller", 67, 22, ProfileText, true, 11F);
+            virtualControllerDetailLabel = CreateLabel("Select a controller profile to view its output.",
+                67, 51, ProfileMuted, false, 9F);
+            virtualControllerDetailLabel.AutoSize = false;
+            virtualControllerDetailLabel.Size = new Size(470, 42);
+            StyleStandardButton(gameControllersButton, false);
+            gameControllersButton.Location = new Point(67, 95);
+            gameControllersButton.Size = new Size(210, 32);
+            gameControllersButton.Text = "Open Game Controllers...";
+            deviceCard.Controls.Add(icon);
+            deviceCard.Controls.Add(virtualControllerNameLabel);
+            deviceCard.Controls.Add(virtualControllerDetailLabel);
+            deviceCard.Controls.Add(gameControllersButton);
+            page.Controls.Add(deviceCard);
+
+            page.Controls.Add(CreateDivider(24, 328));
+            AddSectionHeading(page, "About testing", 345,
+                "Connected profiles open the matching virtual controller's Properties dialog. " +
+                "Disconnected profiles open the standard Windows Game Controllers list.");
+            return page;
+        }
+
+        private void AddSectionHeading(Panel page, string title, int top, string description) {
+            page.Controls.Add(CreateLabel(title, 24, top, ProfileText, true, 12F));
+            Label help = CreateLabel(description, 24, top + 27, ProfileMuted, false, 9F);
+            help.AutoSize = false;
+            // A transparent WinForms Label still paints its full rectangular bounds. Keeping a
+            // one-line helper at the old two-line height let that invisible lower half sit on
+            // top of the selector below it, visibly shaving several pixels off the control.
+            // Reserve the taller box only for copy that can actually wrap to a second line.
+            help.Size = new Size(570, description.Length > 100 ? 40 : 22);
+            page.Controls.Add(help);
+        }
+
+        private void AddMappingRow(Panel page, Label label, SplitButton button, string text,
+                                   int top, int labelX, int buttonX, int buttonWidth) {
+            if (label == null)
+                label = new Label();
+            label.Text = text;
+            label.AutoSize = false;
+            label.Location = new Point(labelX, top + 7);
+            label.Size = new Size(Math.Max(80, buttonX - labelX - 12), 22);
+            label.ForeColor = ProfileText;
+            label.BackColor = Color.Transparent;
+            label.TextAlign = ContentAlignment.MiddleLeft;
+            page.Controls.Add(label);
+
+            StyleMappingButton(button);
+            button.Location = new Point(buttonX, top);
+            button.Size = new Size(buttonWidth, 31);
+            page.Controls.Add(button);
+        }
+
+        private Panel CreateDivider(int left, int top) {
+            return new Panel {
+                Location = new Point(left, top),
+                Size = new Size(570, 1),
+                BackColor = ProfileBorder,
+            };
+        }
+
+        private Label CreateLabel(string text, int left, int top, Color color, bool bold,
+                                  float size = 9F) {
+            return new Label {
+                AutoSize = true,
+                Text = text,
+                Location = new Point(left, top),
+                ForeColor = color,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
+            };
+        }
+
+        private void StyleMappingButton(SplitButton button) {
+            button.UseVisualStyleBackColor = false;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = ProfileBorder;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = ProfileSurfaceHover;
+            button.BackColor = ProfileSurface;
+            button.ForeColor = ProfileText;
+            button.TextAlign = ContentAlignment.MiddleLeft;
+            button.Padding = new Padding(8, 0, 0, 0);
+            button.Font = new Font("Segoe UI", 9F);
+            button.Cursor = Cursors.Hand;
+        }
+
+        private void StyleStandardButton(Button button, bool accent) {
+            button.UseVisualStyleBackColor = false;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = accent ? ProfileAccent : ProfileBorder;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = accent
+                ? Color.FromArgb(255, 201, 65)
+                : ProfileSurfaceHover;
+            button.BackColor = accent ? ProfileAccent : ProfileSurface;
+            button.ForeColor = accent ? Color.FromArgb(28, 28, 28) : ProfileText;
+            button.Font = new Font("Segoe UI", 9F, accent ? FontStyle.Bold : FontStyle.Regular);
+            button.Cursor = Cursors.Hand;
+        }
+
+        private void StyleAssignmentMenus() {
+            foreach (ContextMenuStrip menu in new[] { menu_joy_buttons, menu_gyro_activation }) {
+                menu.BackColor = ProfileSurface;
+                menu.ForeColor = ProfileText;
+                menu.ShowImageMargin = false;
+                menu.Font = new Font("Segoe UI", 9F);
+                foreach (ToolStripItem item in menu.Items) {
+                    item.BackColor = ProfileSurface;
+                    item.ForeColor = ProfileText;
+                }
+            }
         }
 
         private void SetRemoteProfiles(IEnumerable<ControllerRecord> records) {
@@ -388,12 +671,145 @@ namespace BetterJoyForCemu {
             CancelComboCapture();
             joyPrevButtons.Clear();
 
-            bool hasController = !String.IsNullOrEmpty(SelectedProfileId);
+            ControllerProfileInfo selected = SelectedProfile;
+            bool hasController = selected != null && !String.IsNullOrEmpty(selected.ProfileId);
             foreach (SplitButton button in specialButtons) {
                 button.Enabled = hasController;
                 GetPrettyName(button);
             }
             btn_apply.Enabled = hasController;
+            gameControllersButton.Enabled = hasController;
+            UpdateProfilePresentation(selected);
+        }
+
+        private void UpdateProfilePresentation(ControllerProfileInfo selected) {
+            if (selected == null) {
+                SetProfileStatus("No profile", ProfileMuted);
+                if (virtualControllerNameLabel != null)
+                    virtualControllerNameLabel.Text = "No controller profile selected";
+                if (virtualControllerDetailLabel != null)
+                    virtualControllerDetailLabel.Text =
+                        "Connect a controller or select a saved profile to inspect its output.";
+                if (gameControllersButton != null)
+                    gameControllersButton.Text = "Open Game Controllers...";
+                return;
+            }
+
+            if (selected.IsConnected) {
+                SetProfileStatus("Connected", ProfileConnected);
+                if (virtualControllerNameLabel != null)
+                    virtualControllerNameLabel.Text = ConfiguredVirtualControllerName();
+                if (virtualControllerDetailLabel != null)
+                    virtualControllerDetailLabel.Text =
+                        "Connected to " + selected.DisplayName + ". Open Windows properties to test its inputs.";
+                if (gameControllersButton != null)
+                    gameControllersButton.Text = "Open controller properties...";
+            } else {
+                SetProfileStatus("Disconnected", ProfileMuted);
+                if (virtualControllerNameLabel != null)
+                    virtualControllerNameLabel.Text = "Virtual controller unavailable";
+                if (virtualControllerDetailLabel != null)
+                    virtualControllerDetailLabel.Text =
+                        "This saved profile is offline. Its virtual controller will return when it reconnects.";
+                if (gameControllersButton != null)
+                    gameControllersButton.Text = "Open Game Controllers...";
+            }
+        }
+
+        private void SetProfileStatus(string text, Color color) {
+            if (profileStatusDot != null) {
+                profileStatusDot.Text = "●";
+                profileStatusDot.ForeColor = color;
+            }
+            if (profileStatusLabel != null) {
+                profileStatusLabel.Text = text;
+                profileStatusLabel.ForeColor = color;
+            }
+        }
+
+        private static string ConfiguredVirtualControllerName() {
+            bool showAsXbox;
+            bool showAsDs4;
+            Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsXInput"], out showAsXbox);
+            Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsDS4"], out showAsDs4);
+            if (showAsXbox)
+                return "Xbox 360 virtual controller";
+            if (showAsDs4)
+                return "DualShock 4 virtual controller";
+            return "Virtual controller output disabled";
+        }
+
+        private void GameControllersButton_Click(object sender, EventArgs e) {
+            ControllerProfileInfo selected = SelectedProfile;
+            if (selected == null)
+                return;
+
+            try {
+                if (selected.IsConnected && OpenSelectedVirtualController(selected))
+                    return;
+                GameControllerControlPanel.OpenDefault();
+            } catch (Exception ex) {
+                MessageBox.Show(this,
+                    "Windows could not open Game Controllers.\r\n\r\n" + ex.Message,
+                    "Controller Profiles", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private bool OpenSelectedVirtualController(ControllerProfileInfo selected) {
+            VirtualGameControllerType controllerType;
+            int ordinal;
+
+            if (serviceClient == null) {
+                Joycon outputOwner = Program.mgr?.j.FirstOrDefault(jc =>
+                    ControllerMappings.ProfileIdFor(jc) == selected.ProfileId &&
+                    (jc.out_xbox != null || jc.out_ds4 != null));
+                if (outputOwner == null)
+                    return false;
+
+                if (outputOwner.out_xbox != null) {
+                    controllerType = VirtualGameControllerType.Xbox360;
+                    ordinal = outputOwner.out_xbox.UserIndex;
+                    if (ordinal < 0)
+                        ordinal = LocalVirtualControllerOrdinal(selected.ProfileId, true);
+                } else {
+                    controllerType = VirtualGameControllerType.DualShock4;
+                    ordinal = LocalVirtualControllerOrdinal(selected.ProfileId, false);
+                }
+            } else {
+                bool hasXboxOutput;
+                bool hasDs4Output;
+                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsXInput"], out hasXboxOutput);
+                Boolean.TryParse(ConfigurationManager.AppSettings["ShowAsDS4"], out hasDs4Output);
+                if (!hasXboxOutput && !hasDs4Output)
+                    return false;
+
+                controllerType = hasXboxOutput
+                    ? VirtualGameControllerType.Xbox360
+                    : VirtualGameControllerType.DualShock4;
+                ordinal = remoteProfiles
+                    .OrderBy(profile => profile.ConnectionSequence)
+                    .Select(profile => profile.ProfileId)
+                    .ToList()
+                    .FindIndex(profileId => profileId == selected.ProfileId);
+            }
+
+            return GameControllerControlPanel.OpenForVirtualController(
+                controllerType, ordinal);
+        }
+
+        private static int LocalVirtualControllerOrdinal(string selectedProfileId,
+                                                          bool xboxOutput) {
+            if (Program.mgr == null)
+                return -1;
+
+            return Program.mgr.j
+                .Where(jc => xboxOutput ? jc.out_xbox != null : jc.out_ds4 != null)
+                .GroupBy(ControllerMappings.ProfileIdFor)
+                .Select(group => group.OrderBy(jc => jc.virtualControllerSequence).First())
+                .OrderBy(jc => jc.virtualControllerSequence)
+                .Select(ControllerMappings.ProfileIdFor)
+                .ToList()
+                .FindIndex(profileId => profileId == selectedProfileId);
         }
 
         private void Menu_joy_buttons_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {

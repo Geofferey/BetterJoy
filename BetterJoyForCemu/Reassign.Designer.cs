@@ -40,15 +40,18 @@ namespace BetterJoyForCemu {
 				int arrowX = ClientRectangle.Width - 14;
 				int arrowY = ClientRectangle.Height / 2 - 1;
 
-				var arrowBrush = Enabled ? SystemBrushes.ControlText : SystemBrushes.ButtonShadow;
 				var arrows = new[] { new Point(arrowX, arrowY), new Point(arrowX + 7, arrowY), new Point(arrowX + 3, arrowY + 4) };
-				pevent.Graphics.FillPolygon(arrowBrush, arrows);
+				using (var arrowBrush = new SolidBrush(Enabled ? ForeColor : Color.FromArgb(120, ForeColor))) {
+					pevent.Graphics.FillPolygon(arrowBrush, arrows);
+				}
 
 				// Draw a dashed separator on the left of the arrow
 				int lineX = ClientRectangle.Width - this.SplitWidth;
 				int lineYFrom = arrowY - 4;
 				int lineYTo = arrowY + 8;
-				using (var separatorPen = new Pen(Brushes.DarkGray) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot }) {
+				using (var separatorPen = new Pen(Enabled
+					? Color.FromArgb(115, ForeColor)
+					: Color.FromArgb(70, ForeColor)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot }) {
 					pevent.Graphics.DrawLine(separatorPen, lineX, lineYFrom, lineX, lineYTo);
 				}
 			}
